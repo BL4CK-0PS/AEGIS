@@ -1,0 +1,40 @@
+# 07 · Schedule: gates, day plan, today
+
+[← Index](README.md)
+
+## Gates: six gates. Miss one and the cuts start.
+
+| Gate | When | Milestone | What must be true | Pass condition |
+|---|---|---|---|---|
+| **G0** | Fri 20 Nov · 21:00 | Contracts frozen | `aeris-types` v0.1, `proto/aeris/v1`, scenario spec S1–S8 and threat model v1 are merged. The repo builds on Rust 1.100 on all four laptops, and CI runs fmt, clippy `-D warnings`, tests and cargo-deny. | CI green on main · every crate compiles as a stub |
+| **G1** | Mon 23 Nov · 18:00 | Walking skeleton | Signed events flow `aeris-simd` → NATS → `aeris-server` → Postgres. `aeris-core` runs with stub stages and pushes a placeholder `CycleOutput` over WebSocket. Go/no-go on the LLM box, and decide NATS vs the in-process fallback. | `aeris-eval --scenario s4` runs end to end on stubs |
+| **G2** | Wed 25 Nov · 18:00 | Computational loop is real | All algorithm crates are real. On S4, in auto-approve mode, trust in B collapses, risk rises, rollouts rank the candidate actions, and the optimizer picks isolate B + reroute via L2 because it scores best on computed outcomes. Execution and verification pass. | S4 integration test in CI across 20 seeds · AI off |
+| **G3** | Fri 27 Nov · 18:00 | Feature freeze | The console shows mission, graph, incident, decision and verification views. A human can approve, modify or reject. The AI explanation is grounded. Decision records are signed and the audit chain verifies. Deployed to the Quantrix DC staging box. | Full demo in the browser, dry run #1 done |
+| **G4** | Sat 28 Nov · 21:00 | Evidence | `aeris-eval` runs S1–S8 × 100 seeds and compares AERIS against two baselines: alert-only and isolate-on-first-alert. It reports precision, recall, F1, detection delay, mission success rate, CVaR, decision latency (p50/p95) and recovery time. Red-team pass: replayed events, forged signatures and spoofed GPS. | `results.md` generated · S4 mission completion rate reported |
+| **G5** | Sun 29 Nov | Release v0.1.0 | Only fixes from G4 go in. Tag v0.1.0 and deploy to the DC. Rehearse the 4-minute demo three times, record the video, and publish a README whose results table is produced by `aeris-eval`. | Tag v0.1.0 · Mon 30 Nov is buffer only |
+
+## Day-by-day: who does what, every day
+
+| Day | Kishanth | Dharshan | Amirtha | Kesivarshini |
+|---|---|---|---|---|
+| **D0** Fri 20 | 2 h kickoff with everyone. `aeris-types` v0.1 (EntityId, Event, Evidence, Belief, TrustVector, Action, Decision, CycleOutput) plus each stage's function signature. `params.toml`. One-page threat model: one compromised node, spoofed sensor, replayed or forged events. | Repo, workspace, `rust-toolchain.toml`, CI (fmt, clippy, test, cargo-deny), `compose.yaml` (postgres:18, nats:2.15 + JetStream), `proto/aeris/v1`, protoc set up in CI. `world.toml` and `s1.toml`–`s8.toml` stubs. | Feature list per node for the estimator and anomaly crates. `likelihoods.toml`. Install mistralrs on the DC GPU box, pick a model, measure latency. | Migration v1 (assets, links, missions, events, evidence, incidents, decisions, approvals, audit_log, operators). axum skeleton with `/health`. |
+| **D1** Sat 21 | `aeris-trust`: Beta per dimension, evidence update, decay, aggregation, mean and variance, plus unit tests. | `aeris-sim` world: 3 nodes, L1/L2, sensors, mission capabilities, seeded 10 Hz tick, `step(S, a, W)`. | `aeris-anomaly`: MAD, EWMA, CUSUM, scores in [0, 1], tests on synthetic series. | Ingest: JetStream consumer → decode → verify (stub) → dedupe on (source, seq) → `events`. `GET /state`. |
+| **D2** Sun 22 | `aeris-core`: `Pipeline::step` wired to stub stages. Start the action generator. | `aeris-simd` publishes events signed with per-node keys (`aeris-crypto`: Ed25519, sequence numbers, replay window). NATS command subject for actions. | `aeris-estimator`: Kalman filter with trust-weighted R, plus the HMM forward filter over the six states. | `aeris-graph`: model loaded from scenario config, `reach()`, `blast_radius()`. WebSocket streams `CycleOutput`. |
+| **D3** Mon 23 · **G1** | Integration morning. Then the optimizer: J(a), CVaR, hard-constraint filter, exhaustive argmax. | Integration morning. Fault injection for S2–S8 as scenario TOML files. | Integration morning. `aeris-fusion`: posterior over five hypotheses, correlation discount, robust aggregation. | Integration morning. `aeris-mission`: capability thresholds, P(success), counterfactual criticality, risk. |
+| **D4** Tue 24 | Feed fusion output into trust. Scaffold the Leptos console (Trunk), driven by recorded WebSocket fixtures. | Rollouts: `fork()` + Monte Carlo per candidate, returning success and loss samples deterministically per seed. | Hand-written Isolation Forest trained on S1 runs. Evidence records carry IDs. | `aeris-policy`: invariants, Π, autonomy gate H<sub>t</sub>. proptest: no approved action ever removes the last communication path. |
+| **D5** Wed 25 · **G2** | With Kesivarshini: S4 integration test in CI across 20 seeds with AI off. Fix whatever breaks. | `aeris-exec`: `Adapter` trait, `SimAdapter`, verification of expected vs observed, replan signal. | Tune detectors: false-positive rate on S1, detection delay on S4 and S5. Calibrate likelihoods. | Decision lifecycle in the database: COMPUTED → RECOMMENDED → HUMAN_REVIEW → APPROVED / MODIFIED / REJECTED → EXECUTED → VERIFIED. |
+| **D6** Thu 26 | Console: mission overview, operational graph as SVG (coloured by trust, isolated nodes dashed), incident view with evidence IDs. | Signed decision records, blake3 audit chain and `aeris-eval verify-audit`. Deploy to the Quantrix DC staging box with TLS on the console. | `aeris-explain`: template explainer first, then mistralrs with JSON in and evidence IDs out, plus the grounding validator. | Auth: argon2 hashes, tower-sessions with httpOnly, Secure, SameSite=Strict cookies; roles operator and commander. Object-level authorization written into the SQL queries. |
+| **D7** Fri 27 · **G3** | Console: decision view (success, risk and CVaR per option; APPROVE / MODIFY / REJECT), verification panel, before/after metrics, "Why?" panel. 17:00 dry run #1. | S7 partition: `aeris-simd` buffers during link loss and replays after. The server orders events by (timestamp, seq) and dedupes. | "Ask why" endpoint grounded in evidence. If a reply would take more than 3 s, return the template. | WebSocket diffs, audit endpoints, model and policy versions stamped on every decision. Integration fixes. |
+| **D8** Sat 28 · **G4** | Threat model vs what was built. cargo-deny clean. Red team: replayed, forged and spoofed inputs. Triage. | With Amirtha: run `aeris-eval` S1–S8 × 100 seeds, both baselines, CSV + `results.md`. | With Dharshan: metrics code and report. Mission success rate vs the two baselines. | Bug bash, database indexes, ingest soak test (100 synthetic nodes at 10 Hz for 10 min). |
+| **D9** Sun 29 · **G5** | *All:* Morning: G4 fixes only, then tag v0.1.0 and deploy. Afternoon: three rehearsals of the 4-minute demo (normal → inject → detect → trust drop → impact → risk → simulate → recommend → approve → execute → verify → recovered), record the video, publish the README. | ← | ← | ← |
+| **Buffer** Mon 30 | *All:* Fixes only. No new features. | ← | ← | ← |
+
+## Today, Fri 20 Nov: before 21:00
+
+- [ ] **All:** read this plan and walk through S4 on a whiteboard. Agree the mission thresholds and the L1/L2 topology.
+- [ ] **All:** run `rustup update` to get stable 1.100.0, then install Docker and protoc.
+- [ ] **Dharshan:** create the repo, workspace, CI and `compose.yaml`, and protect main. Commit `world.toml` and the scenario stubs.
+- [ ] **Kishanth:** merge `aeris-types` v0.1, the stage signatures and `params.toml`, plus the one-page threat model.
+- [ ] **Amirtha:** commit `likelihoods.toml`. Get mistralrs running a model on the DC GPU box and record its latency.
+- [ ] **Kesivarshini:** merge migration v1 and the axum `/health` skeleton.
+- [ ] **G0:** CI green on main.
