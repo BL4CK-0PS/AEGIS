@@ -1,0 +1,13 @@
+[package]
+name = "aeris-console"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Operator console, SVG operational graph, and decision UI for AERIS"
+
+[dependencies]
+aeris-types = { path = "../../crates/aeris-types" }
+aeris-core = { path = "../../crates/aeris-core" }
+serde = { workspace = true }
+serde_json = { workspace = true }

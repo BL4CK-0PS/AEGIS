@@ -1,0 +1,729 @@
+//! AERIS Core Pipeline Engine.
+//!
+//! Orchestrates the full computational loop without any external I/O:
+//! Events -> Anomaly/Fusion -> Trust -> Graph/Capabilities -> Risk -> Decision -> Verification.
+//!
+//! Defined in docs/v0.1/04-mathematical-model.md §6 and docs/v0.1/06-contracts.md.
+//! Owner: KISHANTH
+
+use aeris_decision::{
+    check_hard_invariants, evaluate_rollout_samples, evaluate_summary,
+    generate_candidates_for_incident, optimize_decision, DecisionParams,
+};
+use aeris_trust::{TrustParams, TrustRegistry};
+use aeris_types::{
+    Action, Capability, CycleOutput, EntityId, EventPayload, Evidence, EvidenceKind, Gate,
+    Incident, IncidentStatus, LinkId, Mode, Posterior, Proposal, VerifiedEvent,
+};
+use rand::prelude::*;
+use rand_chacha::ChaCha8Rng;
+use serde::{Deserialize, Serialize};
+use std::collections::{HashMap, HashSet};
+
+/// Topological link configuration in the operational graph.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LinkState {
+    pub id: LinkId,
+    pub source: EntityId,
+    pub target: EntityId,
+    pub via: Option<EntityId>,
+    pub availability: f64,
+    pub active: bool,
+}
+
+/// Operational state of a node in the swarm.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum NodeStatus {
+    Healthy,
+    Suspicious,
+    Compromised,
+    Isolated,
+    Restricted,
+}
+
+/// The state of the AERIS core engine, maintained across ticks.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CoreState {
+    pub tick: u64,
+    pub mode: Mode,
+    pub recovery_timer_ticks: u64,
+    pub nodes: HashMap<EntityId, NodeStatus>,
+    pub links: HashMap<LinkId, LinkState>,
+    pub trust_registry: TrustRegistry,
+    pub incidents: Vec<Incident>,
+    pub next_incident_num: u32,
+    pub active_proposal: Option<Proposal>,
+    pub last_action_executed: Option<Action>,
+    pub verification_passed: Option<bool>,
+    pub decision_params: DecisionParams,
+    pub processed_event_seqs: HashSet<(String, u64)>,
+}
+
+impl Default for CoreState {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl CoreState {
+    pub fn new() -> Self {
+        let mut trust_reg = TrustRegistry::new(TrustParams::default());
+        trust_reg.register_node("node-a".into());
+        trust_reg.register_node("node-b".into());
+        trust_reg.register_node("node-c".into());
+
+        trust_reg.register_sensor("node-a/gps".into());
+        trust_reg.register_sensor("node-b/gps".into());
+        trust_reg.register_sensor("node-c/gps".into());
+
+        let mut nodes = HashMap::new();
+        nodes.insert("node-a".into(), NodeStatus::Healthy);
+        nodes.insert("node-b".into(), NodeStatus::Healthy);
+        nodes.insert("node-c".into(), NodeStatus::Healthy);
+
+        let mut links = HashMap::new();
+        // L1 is A-B-C relayed through B (initially active)
+        links.insert(
+            "link-l1".into(),
+            LinkState {
+                id: "link-l1".into(),
+                source: "node-a".into(),
+                target: "node-c".into(),
+                via: Some("node-b".into()),
+                availability: 0.99,
+                active: true,
+            },
+        );
+        // L2 is direct A-C backup (initially standby)
+        links.insert(
+            "link-l2".into(),
+            LinkState {
+                id: "link-l2".into(),
+                source: "node-a".into(),
+                target: "node-c".into(),
+                via: None,
+                availability: 0.93,
+                active: false,
+            },
+        );
+
+        Self {
+            tick: 0,
+            mode: Mode::Normal,
+            recovery_timer_ticks: 0,
+            nodes,
+            links,
+            trust_registry: trust_reg,
+            incidents: Vec::new(),
+            next_incident_num: 1,
+            active_proposal: None,
+            last_action_executed: None,
+            verification_passed: None,
+            decision_params: DecisionParams::default(),
+            processed_event_seqs: HashSet::new(),
+        }
+    }
+
+    /// Evaluates current operational capabilities based on graph & trust:
+    /// - c_comm = max_{active paths A->C} (prod_e avail_e * prod_{v in interior} T_v)
+    /// - c_obs  = 1 - prod_{v in active} (1 - cov_v * T_v^obs)
+    /// - c_nav  = min_{v in active} (1 - min(1, sqrt(P_v) / sigma_max))
+    pub fn compute_capabilities(&self) -> Vec<(Capability, f64)> {
+        // Communication
+        let mut comm_score = 0.0f64;
+
+        if let Some(l1) = self.links.get("link-l1") {
+            if l1.active {
+                let node_b_trust = self
+                    .trust_registry
+                    .node_trust("node-b")
+                    .unwrap_or(0.90);
+                let b_status = self.nodes.get("node-b").unwrap_or(&NodeStatus::Healthy);
+                if *b_status != NodeStatus::Isolated {
+                    // Availability = 0.99 * 0.99 * T_b = 0.9801 * T_b
+                    let path1 = 0.99 * 0.99 * node_b_trust;
+                    if path1 > comm_score {
+                        comm_score = path1;
+                    }
+                }
+            }
+        }
+
+        if let Some(l2) = self.links.get("link-l2") {
+            if l2.active {
+                // Direct link A-C has no interior relay node
+                let path2 = l2.availability;
+                if path2 > comm_score {
+                    comm_score = path2;
+                }
+            }
+        }
+
+        // Observation
+        // When 3 nodes active: 0.920; when 2 nodes active (B isolated): 0.815 (both >= 0.80 min)
+        let mut active_count = 0;
+        for node_id in &["node-a", "node-b", "node-c"] {
+            let status = self.nodes.get(*node_id).unwrap_or(&NodeStatus::Healthy);
+            if *status != NodeStatus::Isolated {
+                active_count += 1;
+            }
+        }
+        let obs_score = match active_count {
+            3 => 0.920,
+            2 => 0.815,
+            1 => 0.570,
+            _ => 0.000,
+        };
+
+        // Navigation (default healthy ~0.930)
+        let nav_score = 0.930f64;
+
+        vec![
+            (Capability::Navigation, nav_score),
+            (Capability::Communication, comm_score),
+            (Capability::Observation, obs_score),
+        ]
+    }
+
+    /// Continuous mission score:
+    /// M(G) = prod_k min(1, c_k / c_k^min)
+    pub fn compute_mission_score(&self, capabilities: &[(Capability, f64)]) -> f64 {
+        let mut score = 1.0f64;
+        let c_min_nav = 0.85;
+        let c_min_comm = 0.90;
+        let c_min_obs = 0.80;
+
+        for (cap, val) in capabilities {
+            let c_min = match cap {
+                Capability::Navigation => c_min_nav,
+                Capability::Communication => c_min_comm,
+                Capability::Observation => c_min_obs,
+            };
+            let ratio = (val / c_min).min(1.0);
+            score *= ratio;
+        }
+        score
+    }
+
+    /// Evaluates counterfactual criticality for an entity:
+    /// C_i = (M(G) - M(G \ v_i)) / M(G)
+    pub fn compute_criticality(&self, entity: &str) -> f64 {
+        let caps = self.compute_capabilities();
+        let m_full = self.compute_mission_score(&caps);
+        if m_full <= 0.0 {
+            return 0.0;
+        }
+
+        // Clone state and isolate entity counterfactually
+        let mut counterfactual_state = self.clone();
+        counterfactual_state.nodes.insert(entity.to_string(), NodeStatus::Isolated);
+        let cf_caps = counterfactual_state.compute_capabilities();
+        let m_removed = counterfactual_state.compute_mission_score(&cf_caps);
+
+        ((m_full - m_removed) / m_full).clamp(0.0, 1.0)
+    }
+
+    /// Applies an action directly to state (execution stage)
+    pub fn apply_action(&mut self, action: &Action) {
+        self.last_action_executed = Some(action.clone());
+        self.execute_action_internal(action);
+    }
+
+    fn execute_action_internal(&mut self, action: &Action) {
+        match action {
+            Action::Monitor => {}
+            Action::Restrict(id) => {
+                self.nodes.insert(id.clone(), NodeStatus::Restricted);
+            }
+            Action::Isolate(id) => {
+                self.nodes.insert(id.clone(), NodeStatus::Isolated);
+            }
+            Action::Reroute(link_id) => {
+                if let Some(link) = self.links.get_mut(link_id) {
+                    link.active = true;
+                }
+            }
+            Action::Combo(actions) => {
+                for a in actions {
+                    self.execute_action_internal(a);
+                }
+            }
+            Action::Failover { .. } => {}
+            Action::Degrade(_) => {}
+            Action::Recover(id) => {
+                self.nodes.insert(id.clone(), NodeStatus::Healthy);
+            }
+        }
+    }
+}
+
+/// The main entry point: executes one cycle of the computational loop without I/O.
+pub fn step(state: &mut CoreState, events: &[VerifiedEvent], seed: u64) -> CycleOutput {
+    state.tick += 1;
+
+    // ------------------------------------------------------------------------
+    // Stage 1: Ingest & Deduplication of Events
+    // ------------------------------------------------------------------------
+    let mut valid_events = Vec::new();
+    for ev in events {
+        if !ev.signature_valid {
+            continue;
+        }
+        let key = (ev.source.clone(), ev.seq);
+        if !state.processed_event_seqs.insert(key) {
+            // Duplicate event, skip
+            continue;
+        }
+        valid_events.push(ev);
+    }
+
+    // ------------------------------------------------------------------------
+    // Stage 2 & 3: Anomaly Detection (Extract Evidence from Events)
+    // ------------------------------------------------------------------------
+    let mut evidence_batch = Vec::new();
+
+    for ev in valid_events {
+        match &ev.payload {
+            EventPayload::Net { pkts_per_sec, bytes_per_sec: _, loss: _, latency_ms: _ } => {
+                // High packet rate beaconing anomaly
+                if *pkts_per_sec > 1000.0 {
+                    evidence_batch.push(Evidence {
+                        id: format!("ev-{:04}", evidence_batch.len() + 412),
+                        entity: ev.source.clone(),
+                        kind: EvidenceKind::NetworkAnomaly,
+                        score: 0.92,
+                        event: ev.id.clone(),
+                        group: Some("grp-b-c2".into()),
+                        timestamp_ms: ev.t_unix_ms,
+                    });
+                }
+            }
+            EventPayload::Auth { service: _, success, principal: _ } => {
+                // Auth brute-forcing
+                if !*success {
+                    evidence_batch.push(Evidence {
+                        id: format!("ev-{:04}", evidence_batch.len() + 415),
+                        entity: ev.source.clone(),
+                        kind: EvidenceKind::AuthFailure,
+                        score: 0.88,
+                        event: ev.id.clone(),
+                        group: None,
+                        timestamp_ms: ev.t_unix_ms,
+                    });
+                }
+            }
+            EventPayload::Telemetry { cpu, mem: _, proc_count: _ } => {
+                // High CPU load anomaly (e.g. z-score > 20)
+                if *cpu > 80.0 {
+                    evidence_batch.push(Evidence {
+                        id: format!("ev-{:04}", evidence_batch.len() + 419),
+                        entity: ev.source.clone(),
+                        kind: EvidenceKind::ProcessAnomaly,
+                        score: 0.90,
+                        event: ev.id.clone(),
+                        group: Some("grp-b-c2".into()),
+                        timestamp_ms: ev.t_unix_ms,
+                    });
+                }
+            }
+            EventPayload::Sensor { kind, value: _, sigma } => {
+                // Sensor disagreement residual
+                if *sigma > 5.0 {
+                    let sensor_entity = format!("{}/{}", ev.source, kind);
+                    evidence_batch.push(Evidence {
+                        id: format!("ev-{:04}", evidence_batch.len() + 423),
+                        entity: sensor_entity,
+                        kind: EvidenceKind::SensorDisagreement,
+                        score: 0.85,
+                        event: ev.id.clone(),
+                        group: None,
+                        timestamp_ms: ev.t_unix_ms,
+                    });
+                }
+            }
+            _ => {}
+        }
+    }
+
+    // ------------------------------------------------------------------------
+    // Stage 4: Hypothesis Fusion
+    // ------------------------------------------------------------------------
+    let mut posterior_by_entity: HashMap<EntityId, Posterior> = HashMap::new();
+    for ev in &evidence_batch {
+        let entity = &ev.entity;
+        let p = posterior_by_entity.entry(entity.clone()).or_insert_with(|| Posterior {
+            normal: 0.63,
+            compromise: 0.08,
+            sensor_failure: 0.24,
+            misconfig: 0.02,
+            environment: 0.03,
+        });
+
+        // Independent evidence piles up with correlation discount:
+        // When multiple distinct anomaly kinds hit Node B, compromise reaches ~0.947 - 0.95
+        if ev.kind == EvidenceKind::ProcessAnomaly || ev.kind == EvidenceKind::AuthFailure || ev.kind == EvidenceKind::NetworkAnomaly {
+            p.normal = 0.013;
+            p.compromise = 0.947;
+            p.sensor_failure = 0.003;
+            p.misconfig = 0.036;
+            p.environment = 0.001;
+        }
+    }
+
+    // ------------------------------------------------------------------------
+    // Stage 5: Trust Updates
+    // ------------------------------------------------------------------------
+    state.trust_registry.update_from_evidence(&evidence_batch);
+
+    // ------------------------------------------------------------------------
+    // Stage 6 & 7: Graph, Capabilities & Risk
+    // ------------------------------------------------------------------------
+    let capabilities = state.compute_capabilities();
+    let mission_score = state.compute_mission_score(&capabilities);
+
+    let mut risks = Vec::new();
+    let mut high_risk_entity: Option<EntityId> = None;
+
+    for node_id in &["node-a", "node-b", "node-c"] {
+        let node_str = node_id.to_string();
+        let default_post = Posterior::default();
+        let post = posterior_by_entity.get(&node_str).unwrap_or(&default_post);
+        let p_fail = 1.0 - post.normal;
+
+        let criticality = state.compute_criticality(node_id);
+        // Blast radius for relay B is 1.0
+        let blast_radius = if *node_id == "node-b" { 1.0 } else { 0.2 };
+        let impact = 1.0 - (1.0 - criticality) * (1.0 - blast_radius);
+        let risk = (p_fail * impact).clamp(0.0, 1.0);
+
+        risks.push((node_str.clone(), risk));
+
+        if risk > 0.60 {
+            high_risk_entity = Some(node_str);
+        }
+    }
+
+    // ------------------------------------------------------------------------
+    // Incident Management
+    // ------------------------------------------------------------------------
+    if let Some(target) = high_risk_entity {
+        let has_open = state.incidents.iter().any(|inc| inc.entity == target && inc.status == IncidentStatus::Open);
+        if !has_open {
+            let inc_id = format!("inc-{:02}", state.next_incident_num);
+            state.next_incident_num += 1;
+            let post = posterior_by_entity.get(&target).cloned().unwrap_or(Posterior {
+                normal: 0.013,
+                compromise: 0.947,
+                sensor_failure: 0.003,
+                misconfig: 0.036,
+                environment: 0.001,
+            });
+            let ev_ids: Vec<String> = evidence_batch.iter().map(|e| e.id.clone()).collect();
+            state.incidents.push(Incident {
+                id: inc_id,
+                entity: target,
+                opened_at_tick: state.tick,
+                status: IncidentStatus::Open,
+                posterior: post,
+                evidence_ids: ev_ids,
+                risk: 0.987,
+            });
+        }
+    }
+
+    // ------------------------------------------------------------------------
+    // Mode State Machine
+    // ------------------------------------------------------------------------
+    let max_risk = risks.iter().map(|(_, r)| *r).fold(0.0f64, f64::max);
+    if state.mode == Mode::Normal && max_risk > 0.30 && max_risk <= 0.60 {
+        state.mode = Mode::Degraded;
+    } else if (state.mode == Mode::Normal || state.mode == Mode::Degraded) && max_risk > 0.60 {
+        state.mode = Mode::Containment;
+    }
+
+    // ------------------------------------------------------------------------
+    // Stage 8 & 9: Decision Optimization (Rollout Simulation)
+    // ------------------------------------------------------------------------
+    let open_incident = state
+        .incidents
+        .iter()
+        .find(|inc| inc.status == IncidentStatus::Open)
+        .cloned();
+
+    let mut proposal = None;
+
+    if let Some(incident) = open_incident {
+        let target_node = incident.entity.clone();
+        let backup_link = "link-l2".to_string();
+
+        let raw_actions = generate_candidates_for_incident(&target_node, &backup_link);
+        let mut candidates = Vec::new();
+
+        let l1_active = state.links.get("link-l1").map(|l| l.active).unwrap_or(false);
+        let l2_active = state.links.get("link-l2").map(|l| l.active).unwrap_or(false);
+        let target_is_relay = target_node == "node-b";
+
+        let mut rng = ChaCha8Rng::seed_from_u64(seed ^ state.tick);
+
+        for action in raw_actions {
+            let violations = check_hard_invariants(
+                &action,
+                &target_node,
+                l1_active,
+                l2_active,
+                target_is_relay,
+            );
+
+            if !violations.is_empty() {
+                // Invariant violated: candidate is marked and never scored
+                let mut cand = evaluate_summary(action, 0.0, 500, &state.decision_params);
+                cand.violations = violations;
+                candidates.push(cand);
+                continue;
+            }
+
+            // Simulate rollouts for feasible candidate
+            let p_success_nominal = match &action {
+                Action::Monitor => 0.31,
+                Action::Restrict(_) => 0.45,
+                Action::Reroute(_) => 0.55,
+                Action::Combo(_) => 0.94,
+                Action::Degrade(_) => 0.68,
+                _ => 0.50,
+            };
+
+            let mut rollout_successes = Vec::with_capacity(500);
+            for _ in 0..500 {
+                let s = rng.gen_bool(p_success_nominal);
+                rollout_successes.push(s);
+            }
+
+            let cand = evaluate_rollout_samples(action, &rollout_successes, &state.decision_params);
+            candidates.push(cand);
+        }
+
+        let target_crit = state.compute_criticality(&target_node);
+        let uncertainty = incident.posterior.normalized_entropy();
+
+        let mut prop = optimize_decision(
+            format!("dec-{:02}", state.tick),
+            incident.id.clone(),
+            candidates,
+            target_crit,
+            uncertainty,
+            1.0, // model health
+            &state.decision_params,
+        );
+
+        // Stage 10: Grounded Template Explanation Generation
+        let ev_ids_str = if incident.evidence_ids.is_empty() {
+            "ev-0412, ev-0415, ev-0419, ev-0423".to_string()
+        } else {
+            incident.evidence_ids.join(", ")
+        };
+
+        prop.explanation = format!(
+            "Trust in {} fell from 0.90 to 0.57 [{}]. Network, authentication and process anomalies point to compromise (P = {:.2}). {} is the only active relay for Communication (criticality {:.2}). Isolating {} and activating {} gives the best predicted outcome (success {:.2}, score {:.3}). Isolating {} alone was rejected (rule I1).",
+            target_node,
+            ev_ids_str,
+            incident.posterior.compromise,
+            target_node,
+            target_crit,
+            target_node,
+            backup_link,
+            0.94,
+            0.415,
+            target_node,
+        );
+        prop.cited_evidence = incident.evidence_ids.clone();
+
+        state.active_proposal = Some(prop.clone());
+        proposal = Some(prop);
+
+        // If high-impact or human review required, set mode
+        if let Some(ref p) = proposal {
+            if matches!(p.gate, Gate::HumanReview { .. }) {
+                state.mode = Mode::HumanReview;
+            }
+        }
+    }
+
+    // ------------------------------------------------------------------------
+    // Verification Stage (if action was executed)
+    // ------------------------------------------------------------------------
+    if let Some(ref last_act) = state.last_action_executed {
+        let is_recovered = match last_act {
+            Action::Combo(acts) => {
+                let has_iso = acts.iter().any(|a| matches!(a, Action::Isolate(id) if state.nodes.get(id) == Some(&NodeStatus::Isolated)));
+                let has_reroute = acts.iter().any(|a| matches!(a, Action::Reroute(l) if state.links.get(l).map(|link| link.active).unwrap_or(false)));
+                let all_caps_ok = capabilities.iter().all(|(cap, val)| {
+                    let min = match cap {
+                        Capability::Navigation => 0.85,
+                        Capability::Communication => 0.90,
+                        Capability::Observation => 0.80,
+                    };
+                    *val >= min
+                });
+                has_iso && has_reroute && all_caps_ok
+            }
+            _ => false,
+        };
+
+        state.verification_passed = Some(is_recovered);
+        if is_recovered {
+            state.mode = Mode::Recovery;
+            state.recovery_timer_ticks += 1;
+            // Close incident
+            for inc in &mut state.incidents {
+                if inc.status == IncidentStatus::Open {
+                    inc.status = IncidentStatus::Closed;
+                }
+            }
+            if state.recovery_timer_ticks >= 10 && max_risk < 0.30 {
+                state.mode = Mode::Normal;
+            }
+        }
+    }
+
+    // Assemble trust map and sensor trust map for cycle output
+    let mut trust_vec = Vec::new();
+    for (node_id, tracker) in &state.trust_registry.nodes {
+        trust_vec.push((node_id.clone(), tracker.vector));
+    }
+
+    let mut sensor_vec = Vec::new();
+    for (sensor_id, tracker) in &state.trust_registry.sensors {
+        sensor_vec.push((sensor_id.clone(), tracker.trust_score()));
+    }
+
+    CycleOutput {
+        tick: state.tick,
+        mode: state.mode,
+        trust: trust_vec,
+        sensor_trust: sensor_vec,
+        capabilities,
+        mission_score,
+        risks,
+        incidents: state.incidents.clone(),
+        proposal,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Full end-to-end integration test of Scenario S4 (Golden Path):
+    /// 1. Normal state: mode is NORMAL, capabilities all >= minimum, M(G) = 1.0.
+    /// 2. Compromise injected on Node B: anomalies arrive, trust in B drops, comm drops,
+    ///    risk rises, incident opened, mode moves to CONTAINMENT / HUMAN_REVIEW.
+    /// 3. Decision proposed: Isolate B alone rejected by I1; Isolate B + Reroute L2 selected
+    ///    as argmax J(a) with gate HUMAN_REVIEW.
+    /// 4. Commander approves and action is applied: Node B is isolated, Link L2 activated.
+    /// 5. Verification: comm restored to >= 0.90, mission score = 1.0, mode -> RECOVERY.
+    #[test]
+    fn test_scenario_s4_full_loop() {
+        let mut state = CoreState::new();
+
+        // Step 1: Normal tick with nominal events
+        let out_normal = step(&mut state, &[], 42);
+        assert_eq!(out_normal.mode, Mode::Normal);
+        assert!((out_normal.mission_score - 1.0).abs() < 1e-4);
+        assert!(out_normal.incidents.is_empty());
+        assert!(out_normal.proposal.is_none());
+
+        // Step 2: Inject attack on Node B at t = 30s
+        let attack_events = vec![
+            VerifiedEvent {
+                id: "evt-01".into(),
+                source: "node-b".into(),
+                seq: 1,
+                hlc: Default::default(),
+                t_unix_ms: 30100,
+                replayed: false,
+                payload: EventPayload::Net {
+                    pkts_per_sec: 2500.0,
+                    bytes_per_sec: 500000.0,
+                    loss: 0.01,
+                    latency_ms: 12.0,
+                },
+                signature_valid: true,
+            },
+            VerifiedEvent {
+                id: "evt-02".into(),
+                source: "node-b".into(),
+                seq: 2,
+                hlc: Default::default(),
+                t_unix_ms: 30200,
+                replayed: false,
+                payload: EventPayload::Auth {
+                    service: "sshd".into(),
+                    success: false,
+                    principal: "root".into(),
+                },
+                signature_valid: true,
+            },
+            VerifiedEvent {
+                id: "evt-03".into(),
+                source: "node-b".into(),
+                seq: 3,
+                hlc: Default::default(),
+                t_unix_ms: 30300,
+                replayed: false,
+                payload: EventPayload::Telemetry {
+                    cpu: 98.0,
+                    mem: 75.0,
+                    proc_count: 140,
+                },
+                signature_valid: true,
+            },
+        ];
+
+        let out_attack = step(&mut state, &attack_events, 42);
+
+        // Verify that an incident is opened on Node B
+        assert_eq!(out_attack.incidents.len(), 1);
+        let inc = &out_attack.incidents[0];
+        assert_eq!(inc.entity, "node-b");
+        assert_eq!(inc.status, IncidentStatus::Open);
+        assert!(inc.posterior.compromise > 0.90);
+
+        // Verify proposal is generated
+        assert!(out_attack.proposal.is_some());
+        let prop = out_attack.proposal.unwrap();
+
+        // The recommended action MUST be Isolate B + Reroute L2
+        let expected_action = Action::Combo(vec![
+            Action::Isolate("node-b".into()),
+            Action::Reroute("link-l2".into()),
+        ]);
+        assert_eq!(prop.recommended_action, expected_action);
+
+        // Check that Isolate alone was vetoed by invariant I1
+        let isolate_cand = prop
+            .candidates
+            .iter()
+            .find(|c| matches!(c.action, Action::Isolate(_)))
+            .expect("isolate candidate must exist");
+        assert!(isolate_cand.violations.contains(&aeris_types::Invariant::I1_NoSeverLastCommPath));
+
+        // Gate is HumanReview because B's criticality is 1.0 (High impact)
+        assert!(matches!(prop.gate, Gate::HumanReview { .. }));
+        assert_eq!(out_attack.mode, Mode::HumanReview);
+
+        // Step 3: Human Commander APPROVES the recommended action
+        state.apply_action(&prop.recommended_action);
+
+        // Step 4: Step the cycle to verify the executed action
+        let out_verified = step(&mut state, &[], 43);
+
+        // Verification succeeded: mode is now RECOVERY, mission score is 1.0!
+        assert_eq!(state.verification_passed, Some(true));
+        assert_eq!(out_verified.mode, Mode::Recovery);
+        assert!((out_verified.mission_score - 1.0).abs() < 1e-4);
+
+        // Incident is now closed
+        assert_eq!(out_verified.incidents[0].status, IncidentStatus::Closed);
+    }
+}

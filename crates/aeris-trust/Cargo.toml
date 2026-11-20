@@ -1,0 +1,11 @@
+[package]
+name = "aeris-trust"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Trust vector, Beta distribution dynamics, evidence updates, and decay for AERIS"
+
+[dependencies]
+aeris-types = { path = "../aeris-types" }
+serde = { workspace = true }

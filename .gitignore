@@ -2,3 +2,7 @@
 .clawness/*
 !.clawness/memory.md
 !.clawness/rules/
+
+# Rust build artifacts
+target/
+

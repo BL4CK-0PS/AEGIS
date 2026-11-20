@@ -1,0 +1,90 @@
+# docs/spec/params.toml
+# AERIS v0.1.0 — Frozen Parameter Specification
+# Owner: KISHANTH
+# Source of truth for all mathematical model constants and thresholds.
+# No magic numbers in algorithm code.
+
+[system]
+tick_rate_hz = 10.0
+delta_t_s = 0.1
+nodes = ["node-a", "node-b", "node-c"]
+links = ["link-l1", "link-l2"]
+
+[anomaly]
+# Median Absolute Deviation scale factor: 1 / Phi^(-1)(0.75) ≈ 1.4826
+mad_scale_kappa = 1.4826
+# Baseline anomaly z-score threshold
+z0_threshold = 3.0
+# EWMA smoothing factor
+lambda_ewma = 0.20
+# Sliding window length (ticks)
+sliding_window_l = 100
+# CUSUM reference value (slack)
+cusum_k = 0.50
+# CUSUM decision threshold (alarm)
+cusum_h = 5.0
+
+[trust]
+# Prior Beta parameters Beta(alpha, beta) -> prior mean = 9.0 / (9.0 + 1.0) = 0.900
+prior_alpha = 9.0
+prior_beta = 1.0
+# Decay factor gamma = exp(-lambda_d * delta_t) ≈ 0.95 per tick
+trust_decay_gamma = 0.95
+trust_decay_lambda_d = 0.5129
+# Minimum usable trust before an entity is considered completely untrusted
+t_min = 0.40
+# Dimension weights (equal 1/6 for the 6 dimensions: identity, integrity, behaviour, telemetry, network, provenance)
+dimension_weights = [0.16666666666666666, 0.16666666666666666, 0.16666666666666666, 0.16666666666666666, 0.16666666666666666, 0.16666666666666666]
+# UI label thresholds
+label_normal_min = 0.75
+label_suspicious_min = 0.40
+
+[mission]
+# Capability minimum thresholds (c_k >= c_k^min)
+c_min_nav = 0.85
+c_min_comm = 0.90
+c_min_obs = 0.80
+# Maximum allowable Kalman standard deviation for navigation (meters)
+sigma_max = 30.0
+# Coverage per active observation node
+area_coverage_per_node = 0.60
+
+[decision]
+# Number of Monte Carlo rollout futures per candidate action
+rollouts_n = 500
+# Simulation horizon per rollout (ticks = 10.0 seconds at 10 Hz)
+horizon_k = 100
+# Conditional Value at Risk alpha level (worst 10% of outcomes)
+cvar_alpha = 0.90
+# CVaR penalty lambda in J(a) = E[U|a] - lambda * CVaR_alpha(L|a)
+lambda_cvar_penalty = 0.50
+# Chance constraint failure rate upper bound: UCB_fail <= epsilon
+chance_epsilon = 0.10
+# Standard normal critical value for 95% one-sided upper confidence bound
+ucb_z = 1.645
+
+[disruption_costs]
+# Disruption table d(a)
+monitor = 0.00
+restrict = 0.05
+reroute = 0.05
+isolate = 0.10
+isolate_reroute = 0.15
+failover = 0.10
+degrade = 0.30
+
+[policy]
+# Autonomy gate max uncertainty threshold theta_U
+uncertainty_theta_u = 0.25
+# Human review timeout (seconds) before applying safe fallback
+tau_h_timeout_s = 60.0
+# Model health minimum threshold for autonomous medium/high actions
+model_health_min = 0.90
+# Criticality threshold for HIGH impact classification
+criticality_high_threshold = 0.50
+
+[mode_transitions]
+# Risk thresholds for AERIS operating modes
+risk_degraded_threshold = 0.30
+risk_containment_threshold = 0.60
+recovery_cooldown_s = 10.0

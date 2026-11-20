@@ -1,0 +1,13 @@
+[package]
+name = "aeris-decision"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Action generation, rollout evaluation, CVaR tail risk, and decision optimization for AERIS"
+
+[dependencies]
+aeris-types = { path = "../aeris-types" }
+serde = { workspace = true }
+rand = { workspace = true }
+rand_chacha = { workspace = true }

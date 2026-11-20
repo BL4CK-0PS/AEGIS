@@ -1,0 +1,15 @@
+[package]
+name = "aeris-core"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Core computational pipeline and state loop for AERIS without I/O"
+
+[dependencies]
+aeris-types = { path = "../aeris-types" }
+aeris-trust = { path = "../aeris-trust" }
+aeris-decision = { path = "../aeris-decision" }
+serde = { workspace = true }
+rand = { workspace = true }
+rand_chacha = { workspace = true }
