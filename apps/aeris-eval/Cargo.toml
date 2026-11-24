@@ -1,0 +1,19 @@
+[package]
+name = "aeris-eval"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[dependencies]
+aeris-types = { path = "../../crates/aeris-types" }
+aeris-core = { path = "../../crates/aeris-core" }
+aeris-trust = { path = "../../crates/aeris-trust" }
+aeris-decision = { path = "../../crates/aeris-decision" }
+aeris-anomaly = { path = "../../crates/aeris-anomaly" }
+aeris-estimator = { path = "../../crates/aeris-estimator" }
+aeris-fusion = { path = "../../crates/aeris-fusion" }
+aeris-explain = { path = "../../crates/aeris-explain" }
+rand = { workspace = true }
+rand_chacha = { workspace = true }
+serde = { workspace = true }

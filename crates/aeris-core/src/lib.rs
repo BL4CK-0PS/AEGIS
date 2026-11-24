@@ -6,14 +6,18 @@
 //! Defined in docs/v0.1/04-mathematical-model.md §6 and docs/v0.1/06-contracts.md.
 //! Owner: KISHANTH
 
+use aeris_anomaly::AnomalyEngine;
 use aeris_decision::{
     check_hard_invariants, evaluate_rollout_samples, evaluate_summary,
     generate_candidates_for_incident, optimize_decision, DecisionParams,
 };
+use aeris_estimator::{DiscreteNodeState, SwarmEstimator};
+use aeris_explain::{ExplanationContext, ExplanationEngine};
+use aeris_fusion::FusionEngine;
 use aeris_trust::{TrustParams, TrustRegistry};
 use aeris_types::{
-    Action, Capability, CycleOutput, EntityId, EventPayload, Evidence, EvidenceKind, Gate,
-    Incident, IncidentStatus, LinkId, Mode, Posterior, Proposal, VerifiedEvent,
+    Action, Capability, CycleOutput, EntityId, EventPayload, Gate, Incident, IncidentStatus,
+    Invariant, LinkId, Mode, Posterior, Proposal, VerifiedEvent,
 };
 use rand::prelude::*;
 use rand_chacha::ChaCha8Rng;
@@ -58,6 +62,10 @@ pub struct CoreState {
     pub verification_passed: Option<bool>,
     pub decision_params: DecisionParams,
     pub processed_event_seqs: HashSet<(String, u64)>,
+    pub anomaly_engine: AnomalyEngine,
+    pub fusion_engine: FusionEngine,
+    pub swarm_estimator: SwarmEstimator,
+    pub explainer: ExplanationEngine,
 }
 
 impl Default for CoreState {
@@ -122,6 +130,10 @@ impl CoreState {
             verification_passed: None,
             decision_params: DecisionParams::default(),
             processed_event_seqs: HashSet::new(),
+            anomaly_engine: AnomalyEngine::default(),
+            fusion_engine: FusionEngine::default(),
+            swarm_estimator: SwarmEstimator::default(),
+            explainer: ExplanationEngine::default(),
         }
     }
 
@@ -238,6 +250,9 @@ impl CoreState {
             }
             Action::Isolate(id) => {
                 self.nodes.insert(id.clone(), NodeStatus::Isolated);
+                if let Some(hmm) = self.swarm_estimator.hmm_filters.get_mut(id) {
+                    hmm.force_state(DiscreteNodeState::Isolated);
+                }
             }
             Action::Reroute(link_id) => {
                 if let Some(link) = self.links.get_mut(link_id) {
@@ -253,6 +268,9 @@ impl CoreState {
             Action::Degrade(_) => {}
             Action::Recover(id) => {
                 self.nodes.insert(id.clone(), NodeStatus::Healthy);
+                if let Some(hmm) = self.swarm_estimator.hmm_filters.get_mut(id) {
+                    hmm.force_state(DiscreteNodeState::Normal);
+                }
             }
         }
     }
@@ -275,99 +293,39 @@ pub fn step(state: &mut CoreState, events: &[VerifiedEvent], seed: u64) -> Cycle
             // Duplicate event, skip
             continue;
         }
-        valid_events.push(ev);
+        valid_events.push(ev.clone());
     }
 
     // ------------------------------------------------------------------------
-    // Stage 2 & 3: Anomaly Detection (Extract Evidence from Events)
+    // Stage 2: State Estimation Prediction & Kalman Filter Updates
     // ------------------------------------------------------------------------
-    let mut evidence_batch = Vec::new();
+    state.swarm_estimator.predict_all();
 
-    for ev in valid_events {
-        match &ev.payload {
-            EventPayload::Net { pkts_per_sec, bytes_per_sec: _, loss: _, latency_ms: _ } => {
-                // High packet rate beaconing anomaly
-                if *pkts_per_sec > 1000.0 {
-                    evidence_batch.push(Evidence {
-                        id: format!("ev-{:04}", evidence_batch.len() + 412),
-                        entity: ev.source.clone(),
-                        kind: EvidenceKind::NetworkAnomaly,
-                        score: 0.92,
-                        event: ev.id.clone(),
-                        group: Some("grp-b-c2".into()),
-                        timestamp_ms: ev.t_unix_ms,
-                    });
+    for ev in &valid_events {
+        if let EventPayload::Sensor { kind, value, sigma } = &ev.payload {
+            let sensor_entity = format!("{}/{}", ev.source, kind);
+            let t_obs = state.trust_registry.sensor_trust(&sensor_entity).unwrap_or(0.90);
+            if let Some(val) = value.first() {
+                if let Some(kf) = state.swarm_estimator.kalman_filters.get_mut(&ev.source) {
+                    kf.update_sensor(*val, *sigma, t_obs);
                 }
             }
-            EventPayload::Auth { service: _, success, principal: _ } => {
-                // Auth brute-forcing
-                if !*success {
-                    evidence_batch.push(Evidence {
-                        id: format!("ev-{:04}", evidence_batch.len() + 415),
-                        entity: ev.source.clone(),
-                        kind: EvidenceKind::AuthFailure,
-                        score: 0.88,
-                        event: ev.id.clone(),
-                        group: None,
-                        timestamp_ms: ev.t_unix_ms,
-                    });
-                }
-            }
-            EventPayload::Telemetry { cpu, mem: _, proc_count: _ } => {
-                // High CPU load anomaly (e.g. z-score > 20)
-                if *cpu > 80.0 {
-                    evidence_batch.push(Evidence {
-                        id: format!("ev-{:04}", evidence_batch.len() + 419),
-                        entity: ev.source.clone(),
-                        kind: EvidenceKind::ProcessAnomaly,
-                        score: 0.90,
-                        event: ev.id.clone(),
-                        group: Some("grp-b-c2".into()),
-                        timestamp_ms: ev.t_unix_ms,
-                    });
-                }
-            }
-            EventPayload::Sensor { kind, value: _, sigma } => {
-                // Sensor disagreement residual
-                if *sigma > 5.0 {
-                    let sensor_entity = format!("{}/{}", ev.source, kind);
-                    evidence_batch.push(Evidence {
-                        id: format!("ev-{:04}", evidence_batch.len() + 423),
-                        entity: sensor_entity,
-                        kind: EvidenceKind::SensorDisagreement,
-                        score: 0.85,
-                        event: ev.id.clone(),
-                        group: None,
-                        timestamp_ms: ev.t_unix_ms,
-                    });
-                }
-            }
-            _ => {}
         }
     }
 
     // ------------------------------------------------------------------------
-    // Stage 4: Hypothesis Fusion
+    // Stage 3: Anomaly Detection (Extract Evidence from Events)
     // ------------------------------------------------------------------------
-    let mut posterior_by_entity: HashMap<EntityId, Posterior> = HashMap::new();
-    for ev in &evidence_batch {
-        let entity = &ev.entity;
-        let p = posterior_by_entity.entry(entity.clone()).or_insert_with(|| Posterior {
-            normal: 0.63,
-            compromise: 0.08,
-            sensor_failure: 0.24,
-            misconfig: 0.02,
-            environment: 0.03,
-        });
+    let evidence_batch = state.anomaly_engine.process_events(&valid_events);
 
-        // Independent evidence piles up with correlation discount:
-        // When multiple distinct anomaly kinds hit Node B, compromise reaches ~0.947 - 0.95
-        if ev.kind == EvidenceKind::ProcessAnomaly || ev.kind == EvidenceKind::AuthFailure || ev.kind == EvidenceKind::NetworkAnomaly {
-            p.normal = 0.013;
-            p.compromise = 0.947;
-            p.sensor_failure = 0.003;
-            p.misconfig = 0.036;
-            p.environment = 0.001;
+    // ------------------------------------------------------------------------
+    // Stage 4: Hypothesis Fusion & HMM Forward Filter
+    // ------------------------------------------------------------------------
+    let posterior_by_entity = state.fusion_engine.fuse_all_by_entity(&evidence_batch);
+
+    for (entity, post) in &posterior_by_entity {
+        if let Some(hmm) = state.swarm_estimator.hmm_filters.get_mut(entity) {
+            hmm.update(post);
         }
     }
 
@@ -506,36 +464,46 @@ pub fn step(state: &mut CoreState, events: &[VerifiedEvent], seed: u64) -> Cycle
         let target_crit = state.compute_criticality(&target_node);
         let uncertainty = incident.posterior.normalized_entropy();
 
+        let model_health = state.swarm_estimator.overall_model_health();
         let mut prop = optimize_decision(
             format!("dec-{:02}", state.tick),
             incident.id.clone(),
-            candidates,
+            candidates.clone(),
             target_crit,
             uncertainty,
-            1.0, // model health
+            model_health,
             &state.decision_params,
         );
 
-        // Stage 10: Grounded Template Explanation Generation
-        let ev_ids_str = if incident.evidence_ids.is_empty() {
-            "ev-0412, ev-0415, ev-0419, ev-0423".to_string()
-        } else {
-            incident.evidence_ids.join(", ")
+        // Stage 10: Grounded Explanation Generation via aeris-explain
+        let candidate_summaries: Vec<(Action, f64, f64)> = candidates
+            .iter()
+            .map(|c| (c.action.clone(), c.p_success, c.score))
+            .collect();
+
+        let rejected_invariants: Vec<(Action, Invariant)> = candidates
+            .iter()
+            .filter_map(|c| c.violations.first().map(|v| (c.action.clone(), v.clone())))
+            .collect();
+
+        let target_node_trust = state
+            .trust_registry
+            .node_trust(&target_node)
+            .unwrap_or(0.57);
+
+        let expl_ctx = ExplanationContext {
+            entity: target_node.clone(),
+            trust_before: 0.90,
+            trust_after: target_node_trust,
+            evidence: evidence_batch.clone(),
+            posterior: incident.posterior.clone(),
+            criticality: target_crit,
+            chosen_action: prop.recommended_action.clone(),
+            candidate_summaries,
+            rejected_invariants,
         };
 
-        prop.explanation = format!(
-            "Trust in {} fell from 0.90 to 0.57 [{}]. Network, authentication and process anomalies point to compromise (P = {:.2}). {} is the only active relay for Communication (criticality {:.2}). Isolating {} and activating {} gives the best predicted outcome (success {:.2}, score {:.3}). Isolating {} alone was rejected (rule I1).",
-            target_node,
-            ev_ids_str,
-            incident.posterior.compromise,
-            target_node,
-            target_crit,
-            target_node,
-            backup_link,
-            0.94,
-            0.415,
-            target_node,
-        );
+        prop.explanation = state.explainer.explain(&expl_ctx, None);
         prop.cited_evidence = incident.evidence_ids.clone();
 
         state.active_proposal = Some(prop.clone());
@@ -675,6 +643,20 @@ mod tests {
                     cpu: 98.0,
                     mem: 75.0,
                     proc_count: 140,
+                },
+                signature_valid: true,
+            },
+            VerifiedEvent {
+                id: "evt-04".into(),
+                source: "node-b".into(),
+                seq: 4,
+                hlc: Default::default(),
+                t_unix_ms: 30400,
+                replayed: false,
+                payload: EventPayload::Sensor {
+                    kind: "gps".into(),
+                    value: vec![120.0, 0.0],
+                    sigma: 8.5,
                 },
                 signature_valid: true,
             },

@@ -8,4 +8,6 @@ description = "Domain and API contract types shared by aeris-core, server, and c
 
 [dependencies]
 serde = { workspace = true }
+
+[dev-dependencies]
 serde_json = { workspace = true }

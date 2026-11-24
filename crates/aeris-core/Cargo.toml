@@ -10,6 +10,10 @@ description = "Core computational pipeline and state loop for AERIS without I/O"
 aeris-types = { path = "../aeris-types" }
 aeris-trust = { path = "../aeris-trust" }
 aeris-decision = { path = "../aeris-decision" }
+aeris-anomaly = { path = "../aeris-anomaly" }
+aeris-fusion = { path = "../aeris-fusion" }
+aeris-estimator = { path = "../aeris-estimator" }
+aeris-explain = { path = "../aeris-explain" }
 serde = { workspace = true }
 rand = { workspace = true }
 rand_chacha = { workspace = true }

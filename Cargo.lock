@@ -3,20 +3,33 @@
 version = 4
 
 [[package]]
+name = "aeris-anomaly"
+version = "0.1.0"
+dependencies = [
+ "aeris-types",
+ "rand",
+ "rand_chacha",
+ "serde",
+]
+
+[[package]]
 name = "aeris-console"
 version = "0.1.0"
 dependencies = [
  "aeris-core",
  "aeris-types",
  "serde",
- "serde_json",
 ]
 
 [[package]]
 name = "aeris-core"
 version = "0.1.0"
 dependencies = [
+ "aeris-anomaly",
  "aeris-decision",
+ "aeris-estimator",
+ "aeris-explain",
+ "aeris-fusion",
  "aeris-trust",
  "aeris-types",
  "rand",
@@ -29,8 +42,47 @@ name = "aeris-decision"
 version = "0.1.0"
 dependencies = [
  "aeris-types",
+ "serde",
+]
+
+[[package]]
+name = "aeris-estimator"
+version = "0.1.0"
+dependencies = [
+ "aeris-types",
+ "serde",
+]
+
+[[package]]
+name = "aeris-eval"
+version = "0.1.0"
+dependencies = [
+ "aeris-anomaly",
+ "aeris-core",
+ "aeris-decision",
+ "aeris-estimator",
+ "aeris-explain",
+ "aeris-fusion",
+ "aeris-trust",
+ "aeris-types",
  "rand",
  "rand_chacha",
+ "serde",
+]
+
+[[package]]
+name = "aeris-explain"
+version = "0.1.0"
+dependencies = [
+ "aeris-types",
+ "serde",
+]
+
+[[package]]
+name = "aeris-fusion"
+version = "0.1.0"
+dependencies = [
+ "aeris-types",
  "serde",
 ]
 
