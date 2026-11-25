@@ -234,7 +234,7 @@ impl GraphModel {
 }
 ```
 
-`blast_radius` returns `(raw_sum, normalized)`; normalized is `0.0` when total criticality is `0.0`. `communication_score` considers only active `RoutesThrough` paths and multiplies interior-node trust. `petgraph` is specified at `docs/v0.1/02-team-stack-layout.md:32`, but adding it to `Cargo.toml` is deferred pending workspace approval.
+`blast_radius` returns `(raw_sum, normalized)`; normalized is `0.0` when total criticality is `0.0`. `communication_score` considers only active `RoutesThrough` paths and multiplies interior-node trust. Section 9 supersedes the `ReachDirection` sketch above with `Traversal`; `petgraph = "0.8.3"` was approved on 2026-11-25 and added to the workspace dependencies.
 
 ## 8. Changes requiring Kishanth's approval
 
