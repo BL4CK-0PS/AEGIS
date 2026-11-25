@@ -1,6 +1,6 @@
-# Proposed decision record: `aeris-graph` contract
+# Decision record: `aeris-graph` contract
 
-Status: **proposal only — not approved**. No frozen specification, shared Rust type, migration, `aeris-core`, `Cargo.toml`, or implementation crate was changed. Do not implement `aeris-graph` until the items below are approved. Section 9 records technical-review corrections; where it conflicts with Sections 3–7, Section 9 is the current proposal.
+Status: **approved on 2026-11-25**. Kishanth approved all Section 9 proposals and adding `petgraph = "0.8.3"` to the workspace. Section 9 is the canonical implementation decision; where it conflicts with Sections 3–7, Section 9 wins. Workspace changes are limited to adding `petgraph` and registering `aeris-graph`.
 
 ## 1. Conflicting definitions found
 
@@ -248,11 +248,11 @@ impl GraphModel {
 | Any change to `aeris-decision` invariant checks | Kishanth owns `aeris-decision` (`02-team-stack-layout.md:9`). |
 | Workspace edition/toolchain change and adding `petgraph` to the workspace | Dharshan owns workspace/CI (`02-team-stack-layout.md:10`); Kishanth is tech lead and the spec conflicts with the repo. |
 
-No approval has been requested or received. This document records proposals only.
+Kishanth approved all changes listed above on 2026-11-25. The approval was confirmed in the project session; no separate approval file is present.
 
-## 9. Technical-review corrections (proposal-only; not approved)
+## 9. Technical-review corrections (approved 2026-11-25)
 
-A technical review found errors and ambiguities in Sections 3–7. Every item below is a proposal for Kishanth to decide. Nothing in this section has been approved.
+A technical review found errors and ambiguities in Sections 3–7. Kishanth approved every item in this section on 2026-11-25; these decisions supersede conflicting text in Sections 3–7.
 
 ### 9.1 `EdgeKind` needs tighter endpoint domains
 
@@ -268,7 +268,7 @@ Proposal: define endpoint domains explicitly and add invariants:
 - `Observes`: sensor entity -> observed entity; used by `observation_score`.
 - `Supports`: evidence/claim -> supported claim/capability; inert in v0.1 capability equations.
 
-Decision needed: approve these domains, or decide that `Supports` belongs to a separate evidence graph and should not be a variant in `aeris-graph`.
+Decision: approved these domains; `Supports` remains a variant in `aeris-graph` and is inert in v0.1 capability equations.
 
 ### 9.2 `DependsOn` orientation is logically correct
 
@@ -311,7 +311,7 @@ pub fn neighbors(
 ) -> Result<HashSet<EntityId>, GraphError>;
 ```
 
-`dependencies` and `dependents` use `DependsOn`; `upstream` and `downstream` use `RoutesThrough`; `neighbors` is for `CommunicatesWith`. Decision needed: approve this rename or require another naming scheme.
+`dependencies` and `dependents` use `DependsOn`; `upstream` and `downstream` use `RoutesThrough`; `neighbors` is for `CommunicatesWith`. Decision: approved this rename.
 
 ### 9.4 `blast_radius` starting-node inclusion is ambiguous
 
@@ -381,7 +381,7 @@ pub fn navigation_score(
 ) -> f64;
 ```
 
-`navigation_score` should compute `sqrt(position_variance(v))` internally. Decision needed: keep coverage as a provider, or add a documented coverage field to `NodeAttrs` / `EdgeAttrs`.
+`navigation_score` computes `sqrt(position_variance(v))` internally. Decision: approved coverage as a provider; no coverage field was added to `NodeAttrs` or `EdgeAttrs`.
 
 ### 9.8 `NodeAttrs` does not fully represent live vertex estimates
 
@@ -389,7 +389,7 @@ Source: `docs/v0.1/04-mathematical-model.md` §6.7 lines 338 and 341.
 
 Problem: §6.7 says each vertex carries `(xhat_i, T_i, C_i, R_i)`. `NodeAttrs` currently carries only `id`, `criticality`, and `capability`. Trust is intentionally passed by closure in Section 6, but `R_i` and `xhat_i` are not represented, and `P_v` needed by navigation is also absent.
 
-Proposal: keep `aeris-graph` structural and document that dynamic values are supplied as follows: `T_i` via trust closure, `C_i` via `NodeAttrs.criticality`, `P_v` via variance closure, `R_i` computed in `aeris-mission` from §6.9, and `xhat_i` not needed by v0.1 graph equations. Decision needed: approve this division of state, or require the full live estimate on every vertex.
+Decision: approved keeping `aeris-graph` structural. Dynamic values are supplied as follows: `T_i` via trust closure, `C_i` via `NodeAttrs.criticality`, `P_v` via variance closure, `R_i` computed in `aeris-mission` from §6.9, and `xhat_i` is not needed by v0.1 graph equations.
 
 ### 9.9 Coupling and workspace practicality
 
@@ -397,4 +397,4 @@ Sources: `docs/v0.1/06-contracts.md` lines 43–69; `crates/aeris-types/src/lib.
 
 Finding: no unnecessary coupling to `aeris-core` was found. Reusing `EntityId`, `LinkId`, and `Capability` from `aeris-types` is justified by the frozen shared contract. The proposed Rust syntax is valid in edition 2021: `impl Fn` arguments, derives, aliases, and `HashMap<EntityId, NodeIndex>` are all supported. `petgraph` is specified but not yet a workspace dependency. No compile check was possible in this environment because no Rust toolchain is on PATH.
 
-Decision needed: approve adding `petgraph = "0.8.3"` to the workspace when implementation starts; no dependency was added by this review.
+Decision: approved adding `petgraph = "0.8.3"` to the workspace when implementation starts.
