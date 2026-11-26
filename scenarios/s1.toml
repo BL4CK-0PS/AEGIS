@@ -1,0 +1,5 @@
+[scenario]
+id = "s1"
+name = "Normal operation"
+description = "No faults. Measures the false-positive rate."
+duration_s = 60.0

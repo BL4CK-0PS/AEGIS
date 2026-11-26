@@ -1,0 +1,12 @@
+[scenario]
+id = "s3"
+name = "L1 latency and packet loss"
+description = "Interference on both L1 hops adds latency and loss."
+duration_s = 60.0
+
+[[faults]]
+kind = "link_degradation"
+link = "link-l1"
+start_s = 30.0
+extra_latency_ms = 300.0
+extra_loss = 0.25

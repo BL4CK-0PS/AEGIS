@@ -4,9 +4,7 @@
 //! Defined in docs/v0.1/04-mathematical-model.md §6.10, §6.11, §6.12.
 //! Owner: KISHANTH
 
-use aeris_types::{
-    Action, Candidate, EntityId, Gate, ImpactClass, Invariant, LinkId, Proposal,
-};
+use aeris_types::{Action, Candidate, EntityId, Gate, ImpactClass, Invariant, LinkId, Proposal};
 use serde::{Deserialize, Serialize};
 
 /// Hyperparameters for decision scoring and constraints.
@@ -181,7 +179,9 @@ pub fn check_hard_invariants(
             }
         }
         Action::Combo(actions) => {
-            let has_isolate = actions.iter().any(|a| matches!(a, Action::Isolate(e) if e == target_node));
+            let has_isolate = actions
+                .iter()
+                .any(|a| matches!(a, Action::Isolate(e) if e == target_node));
             let has_reroute = actions.iter().any(|a| matches!(a, Action::Reroute(_)));
 
             // If isolating without rerouting, it violates I1
@@ -228,11 +228,19 @@ pub fn optimize_decision(
 
     let (chosen, fallback_forced_review) = if !passing_chance.is_empty() {
         // Argmax J(a) among passing
-        passing_chance.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
+        passing_chance.sort_by(|a, b| {
+            b.score
+                .partial_cmp(&a.score)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
         (passing_chance[0].clone(), false)
     } else if !feasible.is_empty() {
         // Fallback: pick highest J among actions passing invariants, but force human review
-        feasible.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
+        feasible.sort_by(|a, b| {
+            b.score
+                .partial_cmp(&a.score)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
         (feasible[0].clone(), true)
     } else {
         // Extreme fallback: Monitor
@@ -334,7 +342,11 @@ mod tests {
             false, // backup link L2 inactive
             true,  // node B is sole comm relay
         );
-        assert!(c_isolate.violations.contains(&Invariant::I1_NoSeverLastCommPath));
+        assert!(
+            c_isolate
+                .violations
+                .contains(&Invariant::I1_NoSeverLastCommPath)
+        );
 
         // 4. Isolate B + Reroute L2
         let combo = Action::Combo(vec![
@@ -342,21 +354,23 @@ mod tests {
             Action::Reroute("link-l2".into()),
         ]);
         let mut c_combo = evaluate_summary(combo.clone(), 0.94, 500, &params);
-        c_combo.violations = check_hard_invariants(
-            &c_combo.action,
-            "node-b",
-            true,
-            false,
-            true,
+        c_combo.violations = check_hard_invariants(&c_combo.action, "node-b", true, false, true);
+        assert!(
+            c_combo.violations.is_empty(),
+            "Combo must satisfy I1 because L2 is activated simultaneously"
         );
-        assert!(c_combo.violations.is_empty(), "Combo must satisfy I1 because L2 is activated simultaneously");
         assert!((c_combo.exp_utility - 0.790).abs() < 1e-3);
         assert!((c_combo.cvar - 0.750).abs() < 1e-3);
         assert!((c_combo.score - 0.415).abs() < 1e-3);
         assert!(passes_chance_constraint(&c_combo, &params));
 
         // 5. Degrade
-        let c_degrade = evaluate_summary(Action::Degrade(aeris_types::Capability::Communication), 0.68, 500, &params);
+        let c_degrade = evaluate_summary(
+            Action::Degrade(aeris_types::Capability::Communication),
+            0.68,
+            500,
+            &params,
+        );
         assert!((c_degrade.exp_utility - 0.380).abs() < 1e-3);
         assert!((c_degrade.cvar - 1.300).abs() < 1e-3);
         assert!((c_degrade.score - (-0.270)).abs() < 1e-3);

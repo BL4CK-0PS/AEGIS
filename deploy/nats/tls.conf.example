@@ -1,0 +1,10 @@
+# Include in nats-server.conf for the Quantrix DC deployment:
+#   include ./tls.conf
+# Certificates are mounted read-only at /etc/nats/tls by the deployment, never committed.
+tls {
+  cert_file: "/etc/nats/tls/server.crt"
+  key_file:  "/etc/nats/tls/server.key"
+  ca_file:   "/etc/nats/tls/ca.crt"
+  verify:    false          # set true for mTLS (v0.2)
+  timeout:   2
+}

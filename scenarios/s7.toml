@@ -1,0 +1,11 @@
+[scenario]
+id = "s7"
+name = "A–C partition for 20 s"
+description = "Both paths between A and C are cut (hop B–C of L1 and hop A–C of L2). node-c cannot reach the uplink; its events are buffered and replayed after the partition heals."
+duration_s = 60.0
+
+[[faults]]
+kind = "partition"
+hops = [["node-b", "node-c"], ["node-a", "node-c"]]
+start_s = 30.0
+end_s = 50.0

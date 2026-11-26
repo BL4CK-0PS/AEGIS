@@ -1,0 +1,38 @@
+[package]
+name = "aeris-harness"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors = ["Dharshan"]
+license.workspace = true
+publish.workspace = true
+description = "AERIS closed-loop integration harness (sim -> crypto -> core -> approval -> exec -> verify), scenario sweeps, verify-audit"
+
+[[bin]]
+name = "aeris-harness"
+path = "src/main.rs"
+
+[dependencies]
+aeris-types = { path = "../../crates/aeris-types" }
+aeris-wire = { path = "../../crates/aeris-wire" }
+aeris-crypto = { path = "../../crates/aeris-crypto" }
+aeris-sim = { path = "../../crates/aeris-sim" }
+aeris-exec = { path = "../../crates/aeris-exec", features = ["nats"] }
+aeris-core = { path = "../../crates/aeris-core" }
+aeris-simd = { path = "../aeris-simd" }
+async-nats = { workspace = true }
+futures = { workspace = true }
+tokio = { workspace = true }
+clap = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+thiserror = { workspace = true }
+uuid = { workspace = true }
+rand = { workspace = true }
+rand_chacha = { workspace = true }
+postgres = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }

@@ -7,16 +7,14 @@
 //! Owner: KISHANTH
 
 use aeris_decision::{
-    check_hard_invariants, evaluate_rollout_samples, evaluate_summary,
-    generate_candidates_for_incident, optimize_decision, DecisionParams,
+    DecisionParams, check_hard_invariants, evaluate_rollout_samples, evaluate_summary,
+    generate_candidates_for_incident, optimize_decision,
 };
 use aeris_trust::{TrustParams, TrustRegistry};
 use aeris_types::{
     Action, Capability, CycleOutput, EntityId, EventPayload, Evidence, EvidenceKind, Gate,
     Incident, IncidentStatus, LinkId, Mode, Posterior, Proposal, VerifiedEvent,
 };
-use rand::prelude::*;
-use rand_chacha::ChaCha8Rng;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 
@@ -133,30 +131,27 @@ impl CoreState {
         // Communication
         let mut comm_score = 0.0f64;
 
-        if let Some(l1) = self.links.get("link-l1") {
-            if l1.active {
-                let node_b_trust = self
-                    .trust_registry
-                    .node_trust("node-b")
-                    .unwrap_or(0.90);
-                let b_status = self.nodes.get("node-b").unwrap_or(&NodeStatus::Healthy);
-                if *b_status != NodeStatus::Isolated {
-                    // Availability = 0.99 * 0.99 * T_b = 0.9801 * T_b
-                    let path1 = 0.99 * 0.99 * node_b_trust;
-                    if path1 > comm_score {
-                        comm_score = path1;
-                    }
+        if let Some(l1) = self.links.get("link-l1")
+            && l1.active
+        {
+            let node_b_trust = self.trust_registry.node_trust("node-b").unwrap_or(0.90);
+            let b_status = self.nodes.get("node-b").unwrap_or(&NodeStatus::Healthy);
+            if *b_status != NodeStatus::Isolated {
+                // Availability = 0.99 * 0.99 * T_b = 0.9801 * T_b
+                let path1 = 0.99 * 0.99 * node_b_trust;
+                if path1 > comm_score {
+                    comm_score = path1;
                 }
             }
         }
 
-        if let Some(l2) = self.links.get("link-l2") {
-            if l2.active {
-                // Direct link A-C has no interior relay node
-                let path2 = l2.availability;
-                if path2 > comm_score {
-                    comm_score = path2;
-                }
+        if let Some(l2) = self.links.get("link-l2")
+            && l2.active
+        {
+            // Direct link A-C has no interior relay node
+            let path2 = l2.availability;
+            if path2 > comm_score {
+                comm_score = path2;
             }
         }
 
@@ -217,7 +212,9 @@ impl CoreState {
 
         // Clone state and isolate entity counterfactually
         let mut counterfactual_state = self.clone();
-        counterfactual_state.nodes.insert(entity.to_string(), NodeStatus::Isolated);
+        counterfactual_state
+            .nodes
+            .insert(entity.to_string(), NodeStatus::Isolated);
         let cf_caps = counterfactual_state.compute_capabilities();
         let m_removed = counterfactual_state.compute_mission_score(&cf_caps);
 
@@ -258,6 +255,89 @@ impl CoreState {
     }
 }
 
+/// The frozen simulated world used for counterfactual rollouts.
+fn rollout_config() -> Option<std::sync::Arc<aeris_sim::WorldConfig>> {
+    static CFG: std::sync::OnceLock<Option<std::sync::Arc<aeris_sim::WorldConfig>>> =
+        std::sync::OnceLock::new();
+    CFG.get_or_init(|| {
+        aeris_sim::WorldConfig::frozen()
+            .ok()
+            .map(std::sync::Arc::new)
+    })
+    .clone()
+}
+
+/// Rollout base world built from the pipeline's own view of the topology
+/// (node statuses and link activation). No ground truth is available here.
+fn rollout_world(state: &CoreState, seed: u64) -> Option<aeris_sim::World> {
+    let cfg = rollout_config()?;
+    let mut nodes: Vec<(String, aeris_wire::NodeMode)> = cfg
+        .nodes
+        .iter()
+        .map(|n| {
+            let mode = match state.nodes.get(&n.id) {
+                Some(NodeStatus::Isolated) => aeris_wire::NodeMode::Isolated,
+                Some(NodeStatus::Restricted) => aeris_wire::NodeMode::Restricted,
+                _ => aeris_wire::NodeMode::Active,
+            };
+            (n.id.clone(), mode)
+        })
+        .collect();
+    nodes.sort_by(|a, b| a.0.cmp(&b.0));
+    let links = cfg
+        .links
+        .iter()
+        .map(|l| aeris_wire::LinkObservation {
+            link: l.id.clone(),
+            active: state.links.get(&l.id).map_or(l.active, |s| s.active),
+            up: true,
+            availability: l.hop_availability.iter().product(),
+            latency_ms: l.latency_ms.iter().sum(),
+            loss: 0.0,
+        })
+        .collect();
+    let obs = aeris_wire::WorldObservation {
+        tick: state.tick,
+        t_unix_ms: 0,
+        nodes,
+        links,
+        degraded: Vec::new(),
+    };
+    aeris_sim::World::from_observation(
+        std::sync::Arc::clone(&cfg),
+        &obs,
+        aeris_sim::rng::derive_seed(seed, "core-rollout-base", state.tick),
+    )
+    .ok()
+}
+
+/// Belief for rollouts: compromise / sensor-failure probabilities from the
+/// fused posteriors of nodes known to the world model.
+fn rollout_belief(
+    incident: &Incident,
+    posteriors: &HashMap<EntityId, Posterior>,
+) -> aeris_sim::Belief {
+    let Some(cfg) = rollout_config() else {
+        return aeris_sim::Belief::default();
+    };
+    let mut nodes = Vec::new();
+    for n in &cfg.nodes {
+        let post = if n.id == incident.entity {
+            Some(&incident.posterior)
+        } else {
+            posteriors.get(&n.id)
+        };
+        if let Some(p) = post {
+            nodes.push(aeris_sim::NodeBelief {
+                node: n.id.clone(),
+                p_compromised: p.compromise.clamp(0.0, 1.0),
+                p_gps_failed: p.sensor_failure.clamp(0.0, 1.0),
+            });
+        }
+    }
+    aeris_sim::Belief { nodes }
+}
+
 /// The main entry point: executes one cycle of the computational loop without I/O.
 pub fn step(state: &mut CoreState, events: &[VerifiedEvent], seed: u64) -> CycleOutput {
     state.tick += 1;
@@ -285,7 +365,12 @@ pub fn step(state: &mut CoreState, events: &[VerifiedEvent], seed: u64) -> Cycle
 
     for ev in valid_events {
         match &ev.payload {
-            EventPayload::Net { pkts_per_sec, bytes_per_sec: _, loss: _, latency_ms: _ } => {
+            EventPayload::Net {
+                pkts_per_sec,
+                bytes_per_sec: _,
+                loss: _,
+                latency_ms: _,
+            } => {
                 // High packet rate beaconing anomaly
                 if *pkts_per_sec > 1000.0 {
                     evidence_batch.push(Evidence {
@@ -299,7 +384,11 @@ pub fn step(state: &mut CoreState, events: &[VerifiedEvent], seed: u64) -> Cycle
                     });
                 }
             }
-            EventPayload::Auth { service: _, success, principal: _ } => {
+            EventPayload::Auth {
+                service: _,
+                success,
+                principal: _,
+            } => {
                 // Auth brute-forcing
                 if !*success {
                     evidence_batch.push(Evidence {
@@ -313,7 +402,11 @@ pub fn step(state: &mut CoreState, events: &[VerifiedEvent], seed: u64) -> Cycle
                     });
                 }
             }
-            EventPayload::Telemetry { cpu, mem: _, proc_count: _ } => {
+            EventPayload::Telemetry {
+                cpu,
+                mem: _,
+                proc_count: _,
+            } => {
                 // High CPU load anomaly (e.g. z-score > 20)
                 if *cpu > 80.0 {
                     evidence_batch.push(Evidence {
@@ -327,20 +420,22 @@ pub fn step(state: &mut CoreState, events: &[VerifiedEvent], seed: u64) -> Cycle
                     });
                 }
             }
-            EventPayload::Sensor { kind, value: _, sigma } => {
-                // Sensor disagreement residual
-                if *sigma > 5.0 {
-                    let sensor_entity = format!("{}/{}", ev.source, kind);
-                    evidence_batch.push(Evidence {
-                        id: format!("ev-{:04}", evidence_batch.len() + 423),
-                        entity: sensor_entity,
-                        kind: EvidenceKind::SensorDisagreement,
-                        score: 0.85,
-                        event: ev.id.clone(),
-                        group: None,
-                        timestamp_ms: ev.t_unix_ms,
-                    });
-                }
+            // Sensor disagreement residual
+            EventPayload::Sensor {
+                kind,
+                value: _,
+                sigma,
+            } if *sigma > 5.0 => {
+                let sensor_entity = format!("{}/{}", ev.source, kind);
+                evidence_batch.push(Evidence {
+                    id: format!("ev-{:04}", evidence_batch.len() + 423),
+                    entity: sensor_entity,
+                    kind: EvidenceKind::SensorDisagreement,
+                    score: 0.85,
+                    event: ev.id.clone(),
+                    group: None,
+                    timestamp_ms: ev.t_unix_ms,
+                });
             }
             _ => {}
         }
@@ -352,17 +447,22 @@ pub fn step(state: &mut CoreState, events: &[VerifiedEvent], seed: u64) -> Cycle
     let mut posterior_by_entity: HashMap<EntityId, Posterior> = HashMap::new();
     for ev in &evidence_batch {
         let entity = &ev.entity;
-        let p = posterior_by_entity.entry(entity.clone()).or_insert_with(|| Posterior {
-            normal: 0.63,
-            compromise: 0.08,
-            sensor_failure: 0.24,
-            misconfig: 0.02,
-            environment: 0.03,
-        });
+        let p = posterior_by_entity
+            .entry(entity.clone())
+            .or_insert_with(|| Posterior {
+                normal: 0.63,
+                compromise: 0.08,
+                sensor_failure: 0.24,
+                misconfig: 0.02,
+                environment: 0.03,
+            });
 
         // Independent evidence piles up with correlation discount:
         // When multiple distinct anomaly kinds hit Node B, compromise reaches ~0.947 - 0.95
-        if ev.kind == EvidenceKind::ProcessAnomaly || ev.kind == EvidenceKind::AuthFailure || ev.kind == EvidenceKind::NetworkAnomaly {
+        if ev.kind == EvidenceKind::ProcessAnomaly
+            || ev.kind == EvidenceKind::AuthFailure
+            || ev.kind == EvidenceKind::NetworkAnomaly
+        {
             p.normal = 0.013;
             p.compromise = 0.947;
             p.sensor_failure = 0.003;
@@ -408,17 +508,23 @@ pub fn step(state: &mut CoreState, events: &[VerifiedEvent], seed: u64) -> Cycle
     // Incident Management
     // ------------------------------------------------------------------------
     if let Some(target) = high_risk_entity {
-        let has_open = state.incidents.iter().any(|inc| inc.entity == target && inc.status == IncidentStatus::Open);
+        let has_open = state
+            .incidents
+            .iter()
+            .any(|inc| inc.entity == target && inc.status == IncidentStatus::Open);
         if !has_open {
             let inc_id = format!("inc-{:02}", state.next_incident_num);
             state.next_incident_num += 1;
-            let post = posterior_by_entity.get(&target).cloned().unwrap_or(Posterior {
-                normal: 0.013,
-                compromise: 0.947,
-                sensor_failure: 0.003,
-                misconfig: 0.036,
-                environment: 0.001,
-            });
+            let post = posterior_by_entity
+                .get(&target)
+                .cloned()
+                .unwrap_or(Posterior {
+                    normal: 0.013,
+                    compromise: 0.947,
+                    sensor_failure: 0.003,
+                    misconfig: 0.036,
+                    environment: 0.001,
+                });
             let ev_ids: Vec<String> = evidence_batch.iter().map(|e| e.id.clone()).collect();
             state.incidents.push(Incident {
                 id: inc_id,
@@ -460,20 +566,32 @@ pub fn step(state: &mut CoreState, events: &[VerifiedEvent], seed: u64) -> Cycle
         let raw_actions = generate_candidates_for_incident(&target_node, &backup_link);
         let mut candidates = Vec::new();
 
-        let l1_active = state.links.get("link-l1").map(|l| l.active).unwrap_or(false);
-        let l2_active = state.links.get("link-l2").map(|l| l.active).unwrap_or(false);
+        let l1_active = state
+            .links
+            .get("link-l1")
+            .map(|l| l.active)
+            .unwrap_or(false);
+        let l2_active = state
+            .links
+            .get("link-l2")
+            .map(|l| l.active)
+            .unwrap_or(false);
         let target_is_relay = target_node == "node-b";
 
-        let mut rng = ChaCha8Rng::seed_from_u64(seed ^ state.tick);
+        // Counterfactual rollouts (§6.10) run in aeris-sim from AERIS's own
+        // view of the topology and its belief about hidden state; ground truth
+        // never enters. Integration by DHARSHAN; replaces a hardcoded
+        // p_success table (see docs/audit/dharshan-initial-audit.md C-3).
+        let rollout_spec = aeris_sim::RolloutSpec {
+            seed: seed ^ state.tick,
+            ..aeris_sim::RolloutSpec::v01(0)
+        };
+        let rollout_base = rollout_world(state, seed);
+        let belief = rollout_belief(&incident, &posterior_by_entity);
 
         for action in raw_actions {
-            let violations = check_hard_invariants(
-                &action,
-                &target_node,
-                l1_active,
-                l2_active,
-                target_is_relay,
-            );
+            let violations =
+                check_hard_invariants(&action, &target_node, l1_active, l2_active, target_is_relay);
 
             if !violations.is_empty() {
                 // Invariant violated: candidate is marked and never scored
@@ -483,24 +601,27 @@ pub fn step(state: &mut CoreState, events: &[VerifiedEvent], seed: u64) -> Cycle
                 continue;
             }
 
-            // Simulate rollouts for feasible candidate
-            let p_success_nominal = match &action {
-                Action::Monitor => 0.31,
-                Action::Restrict(_) => 0.45,
-                Action::Reroute(_) => 0.55,
-                Action::Combo(_) => 0.94,
-                Action::Degrade(_) => 0.68,
-                _ => 0.50,
+            // Simulate N rollouts of Γ(a) for the feasible candidate.
+            let batch = match (&rollout_base, aeris_wire::commands_for_action(&action)) {
+                (Some(base), Ok(plan)) => {
+                    aeris_sim::run_rollouts(base, &belief, &plan, &rollout_spec).ok()
+                }
+                _ => None,
             };
-
-            let mut rollout_successes = Vec::with_capacity(500);
-            for _ in 0..500 {
-                let s = rng.gen_bool(p_success_nominal);
-                rollout_successes.push(s);
+            match batch {
+                Some(b) => {
+                    let cand =
+                        evaluate_rollout_samples(action, &b.successes(), &state.decision_params);
+                    candidates.push(cand);
+                }
+                None => {
+                    // Not executable in the world model: infeasible, never scored.
+                    let mut cand = evaluate_summary(action, 0.0, 500, &state.decision_params);
+                    cand.violations =
+                        vec![aeris_types::Invariant::I3_EntityMustExistAndNotRedundant];
+                    candidates.push(cand);
+                }
             }
-
-            let cand = evaluate_rollout_samples(action, &rollout_successes, &state.decision_params);
-            candidates.push(cand);
         }
 
         let target_crit = state.compute_criticality(&target_node);
@@ -516,25 +637,52 @@ pub fn step(state: &mut CoreState, events: &[VerifiedEvent], seed: u64) -> Cycle
             &state.decision_params,
         );
 
-        // Stage 10: Grounded Template Explanation Generation
+        // Stage 10: Grounded Template Explanation Generation.
+        // Every number below is computed in this cycle; nothing is a literal
+        // from the spec's worked example (DHARSHAN integration fix, audit H-4).
         let ev_ids_str = if incident.evidence_ids.is_empty() {
-            "ev-0412, ev-0415, ev-0419, ev-0423".to_string()
+            "no evidence ids".to_string()
         } else {
             incident.evidence_ids.join(", ")
         };
-
+        let prior = aeris_types::Beta::default().mean();
+        let trust_now = state
+            .trust_registry
+            .node_trust(&target_node)
+            .unwrap_or(prior);
+        let chosen = prop
+            .candidates
+            .iter()
+            .find(|c| c.action == prop.recommended_action);
+        let rejected: Vec<String> = prop
+            .candidates
+            .iter()
+            .filter(|c| !c.violations.is_empty())
+            .map(|c| {
+                let rules: Vec<String> = c.violations.iter().map(|v| format!("{v:?}")).collect();
+                format!("{} ({})", c.action.display_name(), rules.join(", "))
+            })
+            .collect();
         prop.explanation = format!(
-            "Trust in {} fell from 0.90 to 0.57 [{}]. Network, authentication and process anomalies point to compromise (P = {:.2}). {} is the only active relay for Communication (criticality {:.2}). Isolating {} and activating {} gives the best predicted outcome (success {:.2}, score {:.3}). Isolating {} alone was rejected (rule I1).",
+            "Trust in {} is {:.2} (prior {:.2}) [{}]. Most likely hypothesis: {} (P = {:.2}); compromise P = {:.2}. Criticality of {} is {:.2}. Recommended: {} (simulated success {:.2}, score {:.3}, {} rollouts). Rejected by invariants: {}.",
             target_node,
+            trust_now,
+            prior,
             ev_ids_str,
+            incident.posterior.most_likely().0,
+            incident.posterior.most_likely().1,
             incident.posterior.compromise,
             target_node,
             target_crit,
-            target_node,
-            backup_link,
-            0.94,
-            0.415,
-            target_node,
+            prop.recommended_action.display_name(),
+            chosen.map_or(0.0, |c| c.p_success),
+            chosen.map_or(0.0, |c| c.score),
+            rollout_spec.n,
+            if rejected.is_empty() {
+                "none".to_string()
+            } else {
+                rejected.join("; ")
+            },
         );
         prop.cited_evidence = incident.evidence_ids.clone();
 
@@ -542,10 +690,10 @@ pub fn step(state: &mut CoreState, events: &[VerifiedEvent], seed: u64) -> Cycle
         proposal = Some(prop);
 
         // If high-impact or human review required, set mode
-        if let Some(ref p) = proposal {
-            if matches!(p.gate, Gate::HumanReview { .. }) {
-                state.mode = Mode::HumanReview;
-            }
+        if let Some(ref p) = proposal
+            && matches!(p.gate, Gate::HumanReview { .. })
+        {
+            state.mode = Mode::HumanReview;
         }
     }
 
@@ -706,7 +854,11 @@ mod tests {
             .iter()
             .find(|c| matches!(c.action, Action::Isolate(_)))
             .expect("isolate candidate must exist");
-        assert!(isolate_cand.violations.contains(&aeris_types::Invariant::I1_NoSeverLastCommPath));
+        assert!(
+            isolate_cand
+                .violations
+                .contains(&aeris_types::Invariant::I1_NoSeverLastCommPath)
+        );
 
         // Gate is HumanReview because B's criticality is 1.0 (High impact)
         assert!(matches!(prop.gate, Gate::HumanReview { .. }));

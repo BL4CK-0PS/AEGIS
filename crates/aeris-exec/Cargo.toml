@@ -1,0 +1,34 @@
+[package]
+name = "aeris-exec"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors = ["Dharshan"]
+license.workspace = true
+publish.workspace = true
+description = "AERIS execution: Adapter trait, SimAdapter, Γ(a), authorization gate, verification, replan signal"
+
+[features]
+default = []
+# NATS transport for the simulator adapter (used by apps; algorithm tests run without it).
+nats = ["dep:async-nats", "dep:aeris-crypto", "dep:bytes"]
+
+[dependencies]
+aeris-types = { path = "../aeris-types" }
+aeris-wire = { path = "../aeris-wire" }
+aeris-sim = { path = "../aeris-sim" }
+aeris-crypto = { path = "../aeris-crypto", optional = true }
+async-nats = { workspace = true, optional = true }
+bytes = { workspace = true, optional = true }
+tokio = { workspace = true }
+serde = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+uuid = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["test-util"] }
+aeris-core = { path = "../aeris-core" }
+aeris-decision = { path = "../aeris-decision" }
+aeris-crypto = { path = "../aeris-crypto" }
+serde_json = { workspace = true }

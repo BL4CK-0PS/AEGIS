@@ -5,7 +5,7 @@
 //! Owner: KISHANTH
 
 use aeris_console::{render_html_dashboard, render_terminal_summary};
-use aeris_core::{step, CoreState};
+use aeris_core::{CoreState, step};
 use aeris_types::{EventPayload, VerifiedEvent};
 use std::env;
 
@@ -71,7 +71,10 @@ fn main() {
     println!("{}", render_terminal_summary(&cycle_attack));
 
     if let Some(ref prop) = cycle_attack.proposal {
-        println!("\n>>> COMMANDER APPROVES: {} <<<\n", prop.recommended_action.display_name());
+        println!(
+            "\n>>> COMMANDER APPROVES: {} <<<\n",
+            prop.recommended_action.display_name()
+        );
         state.apply_action(&prop.recommended_action);
 
         let cycle_verified = step(&mut state, &[], 43);

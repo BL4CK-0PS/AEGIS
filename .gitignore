@@ -6,3 +6,8 @@
 # Rust build artifacts
 target/
 
+
+# Secrets: never commit
+deploy/.env
+deploy/keys/
+*.key

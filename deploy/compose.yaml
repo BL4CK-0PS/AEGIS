@@ -1,0 +1,121 @@
+# AERIS v0.1 local infrastructure. Owner: DHARSHAN.
+#
+#   cp deploy/.env.example deploy/.env   # then set every CHANGE_ME
+#   docker compose -f deploy/compose.yaml up -d --wait          # postgres + nats
+#   docker compose -f deploy/compose.yaml --profile sim up -d    # + aeris-simd
+#
+# Ports bind to 127.0.0.1 by default. No credential has a default value:
+# start-up fails if one is missing.
+
+name: aeris
+
+x-hardening: &hardening
+  restart: unless-stopped
+  security_opt: ["no-new-privileges:true"]
+  logging:
+    driver: json-file
+    options: { max-size: "10m", max-file: "5" }
+
+services:
+  postgres:
+    <<: *hardening
+    image: postgres:18
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:?set POSTGRES_USER in deploy/.env}
+      POSTGRES_DB: ${POSTGRES_DB:?set POSTGRES_DB in deploy/.env}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in deploy/.env}
+      POSTGRES_INITDB_ARGS: "--auth-host=scram-sha-256"
+    # PostgreSQL 18 images keep data under /var/lib/postgresql/18/docker;
+    # mount the parent so major upgrades can use pg_upgrade --link.
+    volumes:
+      - pgdata:/var/lib/postgresql
+    ports:
+      - "${POSTGRES_PORT:-127.0.0.1:5432}:5432"
+    networks: [backend]
+    # The entrypoint starts as root only to fix ownership, then drops to the
+    # postgres user; keep just the capabilities that requires.
+    cap_drop: [ALL]
+    cap_add: [CHOWN, DAC_OVERRIDE, FOWNER, SETGID, SETUID]
+    shm_size: 256m
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U \"$${POSTGRES_USER}\" -d \"$${POSTGRES_DB}\" -h 127.0.0.1"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 10s
+
+  # One-shot: give the JetStream volume to the unprivileged NATS user.
+  nats-init:
+    image: nats:2.15-alpine
+    entrypoint: ["sh", "-c", "mkdir -p /data/jetstream && chown -R 1000:1000 /data"]
+    volumes:
+      - natsdata:/data
+    network_mode: none
+    restart: "no"
+
+  nats:
+    <<: *hardening
+    image: nats:2.15-alpine
+    command: ["-c", "/etc/nats/nats-server.conf"]
+    user: "1000:1000"
+    read_only: true
+    cap_drop: [ALL]
+    depends_on:
+      nats-init:
+        condition: service_completed_successfully
+    environment:
+      NATS_SERVER_NAME: ${NATS_SERVER_NAME:-aeris-nats-1}
+      NATS_SIMD_USER: ${NATS_SIMD_USER:?set NATS_SIMD_USER in deploy/.env}
+      NATS_SIMD_PASSWORD: ${NATS_SIMD_PASSWORD:?set NATS_SIMD_PASSWORD in deploy/.env}
+      NATS_SERVER_USER: ${NATS_SERVER_USER:?set NATS_SERVER_USER in deploy/.env}
+      NATS_SERVER_PASSWORD: ${NATS_SERVER_PASSWORD:?set NATS_SERVER_PASSWORD in deploy/.env}
+    volumes:
+      - ./nats/nats-server.conf:/etc/nats/nats-server.conf:ro
+      - natsdata:/data
+    ports:
+      - "${NATS_PORT:-127.0.0.1:4222}:4222"
+      - "${NATS_MONITOR_PORT:-127.0.0.1:8222}:8222"
+    networks: [backend]
+    healthcheck:
+      # Healthy only when JetStream itself is up, not just the listener.
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8222/healthz?js-enabled-only=true"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 5s
+
+  aeris-simd:
+    <<: *hardening
+    profiles: ["sim"]
+    build:
+      context: ..
+      dockerfile: deploy/docker/aeris-simd.Dockerfile
+    image: aeris-simd:0.1.0
+    user: "${AERIS_UID:-1000}:${AERIS_GID:-1000}"
+    read_only: true
+    cap_drop: [ALL]
+    depends_on:
+      nats:
+        condition: service_healthy
+    environment:
+      AERIS_NATS_URL: nats://nats:4222
+      AERIS_NATS_USER: ${NATS_SIMD_USER:?set NATS_SIMD_USER}
+      AERIS_NATS_PASSWORD: ${NATS_SIMD_PASSWORD:?set NATS_SIMD_PASSWORD}
+      AERIS_KEY_DIR: /keys
+      AERIS_SCENARIO: ${AERIS_SCENARIO:-s4}
+      AERIS_SEED: ${AERIS_SEED:-7}
+      AERIS_SPEED: ${AERIS_SPEED:-1.0}
+      AERIS_HOLD: "true"
+      RUST_LOG: info,async_nats=warn
+    volumes:
+      - ${AERIS_KEY_DIR:-./keys}:/keys:ro
+    networks: [backend]
+    command: ["run"]
+
+networks:
+  backend:
+    driver: bridge
+
+volumes:
+  pgdata:
+  natsdata:

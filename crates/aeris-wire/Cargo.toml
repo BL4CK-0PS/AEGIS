@@ -1,0 +1,23 @@
+[package]
+name = "aeris-wire"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors = ["Dharshan"]
+license.workspace = true
+publish.workspace = true
+description = "AERIS Protobuf wire types (proto/aeris/v1) and validated domain conversions"
+
+[dependencies]
+aeris-types = { path = "../aeris-types" }
+prost = { workspace = true }
+thiserror = { workspace = true }
+uuid = { workspace = true }
+serde = { workspace = true }
+
+[build-dependencies]
+prost-build = { workspace = true }
+protox = { workspace = true }
+
+[dev-dependencies]
+proptest = { workspace = true }
