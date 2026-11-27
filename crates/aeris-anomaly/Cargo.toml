@@ -1,0 +1,12 @@
+[package]
+name = "aeris-anomaly"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[dependencies]
+aeris-types = { path = "../aeris-types" }
+serde = { workspace = true }
+rand = { workspace = true }
+rand_chacha = { workspace = true }

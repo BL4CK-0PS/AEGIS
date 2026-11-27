@@ -3,6 +3,16 @@
 version = 4
 
 [[package]]
+name = "aeris-anomaly"
+version = "0.1.0"
+dependencies = [
+ "aeris-types",
+ "rand 0.8.8",
+ "rand_chacha",
+ "serde",
+]
+
+[[package]]
 name = "aeris-console"
 version = "0.1.0"
 dependencies = [
@@ -16,7 +26,11 @@ dependencies = [
 name = "aeris-core"
 version = "0.1.0"
 dependencies = [
+ "aeris-anomaly",
  "aeris-decision",
+ "aeris-estimator",
+ "aeris-explain",
+ "aeris-fusion",
  "aeris-sim",
  "aeris-trust",
  "aeris-types",
@@ -58,6 +72,31 @@ dependencies = [
 ]
 
 [[package]]
+name = "aeris-estimator"
+version = "0.1.0"
+dependencies = [
+ "aeris-types",
+ "serde",
+]
+
+[[package]]
+name = "aeris-eval"
+version = "0.1.0"
+dependencies = [
+ "aeris-anomaly",
+ "aeris-core",
+ "aeris-decision",
+ "aeris-estimator",
+ "aeris-explain",
+ "aeris-fusion",
+ "aeris-trust",
+ "aeris-types",
+ "rand 0.8.8",
+ "rand_chacha",
+ "serde",
+]
+
+[[package]]
 name = "aeris-exec"
 version = "0.1.0"
 dependencies = [
@@ -75,6 +114,22 @@ dependencies = [
  "tokio",
  "tracing",
  "uuid",
+]
+
+[[package]]
+name = "aeris-explain"
+version = "0.1.0"
+dependencies = [
+ "aeris-types",
+ "serde",
+]
+
+[[package]]
+name = "aeris-fusion"
+version = "0.1.0"
+dependencies = [
+ "aeris-types",
+ "serde",
 ]
 
 [[package]]

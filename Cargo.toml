@@ -3,6 +3,10 @@ members = [
     "crates/aeris-types",
     "crates/aeris-trust",
     "crates/aeris-decision",
+    "crates/aeris-anomaly",
+    "crates/aeris-fusion",
+    "crates/aeris-estimator",
+    "crates/aeris-explain",
     "crates/aeris-core",
     "crates/aeris-graph",
     "crates/aeris-wire",
@@ -12,6 +16,7 @@ members = [
     "apps/aeris-console",
     "apps/aeris-simd",
     "apps/aeris-harness",
+    "apps/aeris-eval",
 ]
 resolver = "3"
 

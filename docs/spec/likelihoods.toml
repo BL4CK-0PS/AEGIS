@@ -1,0 +1,53 @@
+# docs/spec/likelihoods.toml
+# AERIS v0.1.0 — Bayesian Hypothesis Fusion Likelihoods Specification
+# Owner: AMIRTHA
+# Frozen priors and conditional likelihoods P(E_k | H) that reproduce §6.5
+
+[priors]
+normal = 0.950
+compromise = 0.010
+sensor_failure = 0.020
+misconfig = 0.015
+environment = 0.005
+
+[likelihoods.sensor_disagreement]
+normal = 0.050
+compromise = 0.600
+sensor_failure = 0.900
+misconfig = 0.100
+environment = 0.500
+
+[likelihoods.network_anomaly]
+normal = 0.050
+compromise = 0.850
+sensor_failure = 0.050
+misconfig = 0.400
+environment = 0.200
+
+[likelihoods.auth_failure]
+normal = 0.020
+compromise = 0.700
+sensor_failure = 0.010
+misconfig = 0.300
+environment = 0.020
+
+[likelihoods.process_anomaly]
+normal = 0.020
+compromise = 0.750
+sensor_failure = 0.010
+misconfig = 0.200
+environment = 0.010
+
+[likelihoods.telemetry_anomaly]
+normal = 0.050
+compromise = 0.650
+sensor_failure = 0.300
+misconfig = 0.200
+environment = 0.050
+
+[likelihoods.other]
+normal = 0.100
+compromise = 0.500
+sensor_failure = 0.200
+misconfig = 0.200
+environment = 0.100

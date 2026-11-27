@@ -13,6 +13,10 @@ aeris-trust = { path = "../aeris-trust" }
 aeris-decision = { path = "../aeris-decision" }
 aeris-sim = { path = "../aeris-sim" }
 aeris-wire = { path = "../aeris-wire" }
+aeris-anomaly = { path = "../aeris-anomaly" }
+aeris-fusion = { path = "../aeris-fusion" }
+aeris-estimator = { path = "../aeris-estimator" }
+aeris-explain = { path = "../aeris-explain" }
 serde = { workspace = true }
 rand = { workspace = true }
 rand_chacha = { workspace = true }
