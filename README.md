@@ -1,5 +1,28 @@
 # AERIS
 
+> **v0.1.0 build (Nov 2026).** The v0.1 product is specified in [`docs/v0.1/`](docs/v0.1/README.md); the
+> rest of this README describes an earlier concept. What runs today on this branch (all values measured; demo
+> runbook, verified results and limitations in
+> [`docs/audit/dharshan-techgium-readiness.md`](docs/audit/dharshan-techgium-readiness.md)):
+>
+> ```bash
+> cp deploy/.env.example deploy/.env                            # then replace every CHANGE_ME
+> docker compose -f deploy/compose.yaml up -d --wait            # Postgres 18 + NATS 2.15/JetStream
+> cargo run -p aeris-simd -- keygen --out deploy/keys           # Ed25519 node/server keys (0600)
+> # live loop over the running stack (two terminals; credentials from deploy/.env):
+> cargo run --release -p aeris-simd -- run --key-dir deploy/keys --scenario s4 --seed 7 --hold   # signed events -> JetStream
+> cargo run --release -p aeris-harness -- live --key-dir deploy/keys                             # type 'approve' when asked
+> # in-process, reproducible:
+> cargo run --release -p aeris-harness -- run --scenario s4 --seed 7 --approve --narrate
+> cargo run --release -p aeris-harness -- sweep --seeds 100 --approve --jobs 8 --out-dir target/sweep
+> cargo run --release -p aeris-harness -- verify-audit --file audit.jsonl --registry deploy/keys/public-keys.toml
+> AERIS_DATABASE_URL=postgres://... cargo run --release -p aeris-harness -- verify-audit --pg --registry deploy/keys/public-keys.toml
+> ```
+>
+> `run --approve` enables an explicit *test* commander; without it HIGH-impact actions never execute. `live`
+> asks a person instead. `aeris-server`, `aeris-policy` and the Leptos console do not exist yet; the harness
+> stands in for them.
+
 ## Evidence Alignment and Reasoning Intelligence System
 
 [![Rust](https://img.shields.io/badge/rust-1.85%2B-orange.svg)](https://www.rust-lang.org/)

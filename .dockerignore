@@ -1,0 +1,6 @@
+target/
+.git/
+deploy/.env
+deploy/keys/
+keys/
+**/*.key

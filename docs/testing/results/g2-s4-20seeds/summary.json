@@ -1,0 +1,80 @@
+[
+  {
+    "scenario": "s4",
+    "strategy": "aeris",
+    "runs": 20,
+    "successes": 20,
+    "tp": 20,
+    "fp": 0,
+    "fn_": 0,
+    "detect_p50_s": 0.0,
+    "detect_p95_s": 0.0,
+    "latency_p50_ms": 82.418246,
+    "latency_p95_ms": 83.67227700000001,
+    "recovery_p50_s": 0.1,
+    "recovery_p95_s": 0.1,
+    "verified_runs": 20,
+    "failed_exec_runs": 0,
+    "escalated_runs": 0,
+    "lateral_runs": 0,
+    "unapproved_non_low": 0,
+    "audit_ok_runs": 20,
+    "events_rejected": 0,
+    "events_replayed": 0,
+    "recommendations": {
+      "Isolate node-b + Reroute via link-l2": 20
+    }
+  },
+  {
+    "scenario": "s4",
+    "strategy": "alert-only",
+    "runs": 20,
+    "successes": 0,
+    "tp": 20,
+    "fp": 0,
+    "fn_": 0,
+    "detect_p50_s": 0.0,
+    "detect_p95_s": 0.0,
+    "latency_p50_ms": 82.69538,
+    "latency_p95_ms": 83.12217399999999,
+    "recovery_p50_s": null,
+    "recovery_p95_s": null,
+    "verified_runs": 0,
+    "failed_exec_runs": 0,
+    "escalated_runs": 0,
+    "lateral_runs": 18,
+    "unapproved_non_low": 0,
+    "audit_ok_runs": 20,
+    "events_rejected": 0,
+    "events_replayed": 0,
+    "recommendations": {
+      "Isolate node-b + Reroute via link-l2": 20
+    }
+  },
+  {
+    "scenario": "s4",
+    "strategy": "naive",
+    "runs": 20,
+    "successes": 0,
+    "tp": 20,
+    "fp": 0,
+    "fn_": 0,
+    "detect_p50_s": 0.0,
+    "detect_p95_s": 0.0,
+    "latency_p50_ms": 82.677599,
+    "latency_p95_ms": 143.877031,
+    "recovery_p50_s": null,
+    "recovery_p95_s": null,
+    "verified_runs": 0,
+    "failed_exec_runs": 0,
+    "escalated_runs": 0,
+    "lateral_runs": 0,
+    "unapproved_non_low": 0,
+    "audit_ok_runs": 20,
+    "events_rejected": 0,
+    "events_replayed": 0,
+    "recommendations": {
+      "Isolate node-b + Reroute via link-l2": 20
+    }
+  }
+]

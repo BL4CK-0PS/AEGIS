@@ -79,7 +79,9 @@ pub fn render_html_dashboard(cycle: &CycleOutput) -> String {
     let mut decision_html = String::new();
     if let Some(ref prop) = cycle.proposal {
         let gate_badge = match &prop.gate {
-            Gate::Auto => r#"<span style="background: #166534; color: #4ade80; padding: 3px 8px; border-radius: 4px; font-size: 12px;">AUTO</span>"#,
+            Gate::Auto => {
+                r#"<span style="background: #166534; color: #4ade80; padding: 3px 8px; border-radius: 4px; font-size: 12px;">AUTO</span>"#
+            }
             Gate::HumanReview { reason } => &format!(
                 r#"<span style="background: #991b1b; color: #fca5a5; padding: 3px 8px; border-radius: 4px; font-size: 12px;" title="{}">HUMAN_REVIEW</span>"#,
                 reason
@@ -241,7 +243,14 @@ pub fn render_html_dashboard(cycle: &CycleOutput) -> String {
     </div>
 </body>
 </html>"#,
-        mode_color, cycle.mode, cycle.tick, cycle.mission_score, svg_graph, decision_html, capabilities_html, incidents_html
+        mode_color,
+        cycle.mode,
+        cycle.tick,
+        cycle.mission_score,
+        svg_graph,
+        decision_html,
+        capabilities_html,
+        incidents_html
     )
 }
 
@@ -290,7 +299,11 @@ pub fn render_svg_graph(cycle: &CycleOutput) -> String {
     ));
 
     // Node B
-    let dash_b = if lbl_b == TrustLabel::Untrusted { "stroke-dasharray=\"6,3\"" } else { "" };
+    let dash_b = if lbl_b == TrustLabel::Untrusted {
+        "stroke-dasharray=\"6,3\""
+    } else {
+        ""
+    };
     svg.push_str(&format!(
         "  <g transform=\"translate(300, 60)\"><circle r=\"28\" fill=\"#1e293b\" stroke=\"{}\" stroke-width=\"3\" {} /><text y=\"-4\" fill=\"white\" font-size=\"12\" font-weight=\"bold\" text-anchor=\"middle\">Node B</text><text y=\"14\" fill=\"{}\" font-size=\"10\" text-anchor=\"middle\">{:.2}</text></g>\n",
         col_b, dash_b, col_b, t_b
@@ -323,7 +336,9 @@ pub fn render_terminal_summary(cycle: &CycleOutput) -> String {
     for (id, tv) in &cycle.trust {
         out.push_str(&format!(
             "   - {:<10} : Trust = {:.3} [{:?}]\n",
-            id, tv.aggregate(None), tv.label(None)
+            id,
+            tv.aggregate(None),
+            tv.label(None)
         ));
     }
     if !cycle.incidents.is_empty() {
@@ -331,7 +346,10 @@ pub fn render_terminal_summary(cycle: &CycleOutput) -> String {
         for inc in &cycle.incidents {
             out.push_str(&format!(
                 "   - Incident #{}: Target = {}, Risk = {:.3}, P(Compromise) = {:.1}%\n",
-                inc.id, inc.entity, inc.risk, inc.posterior.compromise * 100.0
+                inc.id,
+                inc.entity,
+                inc.risk,
+                inc.posterior.compromise * 100.0
             ));
         }
     }

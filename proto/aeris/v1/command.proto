@@ -1,0 +1,99 @@
+// AERIS v0.1 command channel (server -> simulator) and acknowledgements.
+// Owner: DHARSHAN. Contract: docs/v0.1/06-contracts.md, subject aeris.cmd.<entity>.
+//
+// Commands are sent with NATS request/reply. The request is a CommandEnvelope
+// signed by the server key ("AERIS-v1/command\0" || body). The reply is an
+// AckEnvelope signed by the simulator controller key ("AERIS-v1/ack\0" || body).
+// A command is authoritative only if its signature verifies, its (issuer, seq)
+// passes the replay window, and the subject's last token equals the command's
+// target entity.
+syntax = "proto3";
+package aeris.v1;
+
+message CommandEnvelope {
+  bytes body = 1;       // serialized CommandBody
+  bytes signature = 2;  // Ed25519(sk_server, "AERIS-v1/command\0" || body)
+}
+
+enum Capability {
+  CAPABILITY_UNSPECIFIED = 0;
+  CAPABILITY_NAVIGATION = 1;
+  CAPABILITY_COMMUNICATION = 2;
+  CAPABILITY_OBSERVATION = 3;
+}
+
+message CommandBody {
+  string id = 1;           // UUIDv7, unique per command; idempotency key
+  string decision_id = 2;  // decision that authorised this command
+  string issuer = 3;       // "server"
+  uint64 seq = 4;          // strictly increasing per issuer
+  int64 t_unix_ms = 5;
+  oneof op {
+    NodeTarget isolate = 10;          // remove node from routing, stop accepting its traffic
+    NodeTarget restrict = 11;         // revoke privileges / external egress, keep relaying
+    NodeTarget recover = 12;          // return node to ACTIVE
+    LinkTarget activate_link = 13;    // bring a standby link into routing
+    Failover failover = 14;           // move `from`'s relay role off it
+    CapabilityTarget degrade = 15;    // run the mission with the degraded minimum for a capability
+    Observe observe = 16;             // read-only: return the current observable world state
+  }
+}
+
+message NodeTarget { string node = 1; }
+message LinkTarget { string link = 1; }
+message Failover { string from = 1; string to = 2; }
+message CapabilityTarget { Capability capability = 1; }
+message Observe {}
+
+enum AckStatus {
+  ACK_STATUS_UNSPECIFIED = 0;
+  ACK_STATUS_APPLIED = 1;          // state changed as commanded
+  ACK_STATUS_ALREADY_APPLIED = 2;  // target already in the commanded state (idempotent no-op)
+  ACK_STATUS_REJECTED = 3;         // failed authentication/validation; nothing applied
+  ACK_STATUS_FAILED = 4;           // authentic but the world refused it (unknown entity, invalid transition)
+}
+
+enum NodeMode {
+  NODE_MODE_UNSPECIFIED = 0;
+  NODE_MODE_ACTIVE = 1;
+  NODE_MODE_RESTRICTED = 2;
+  NODE_MODE_ISOLATED = 3;
+  NODE_MODE_STANDBY = 4;
+}
+
+message NodeObservation {
+  string node = 1;
+  NodeMode mode = 2;
+}
+
+message LinkObservation {
+  string link = 1;
+  bool active = 2;           // part of routing
+  bool up = 3;               // physically connected (false during a partition)
+  double availability = 4;   // measured end-to-end availability, [0, 1]
+  double latency_ms = 5;
+  double loss = 6;           // [0, 1]
+}
+
+// Operational state that a real control plane can observe (topology and link
+// measurements). It never contains attacker ground truth.
+message WorldObservation {
+  uint64 tick = 1;
+  int64 t_unix_ms = 2;
+  repeated NodeObservation nodes = 3;
+  repeated LinkObservation links = 4;
+  repeated Capability degraded = 5;  // capabilities currently running on degraded minima
+}
+
+message CommandAck {
+  string command_id = 1;
+  AckStatus status = 2;
+  string reason = 3;
+  WorldObservation observation = 4;
+  int64 t_unix_ms = 5;
+}
+
+message AckEnvelope {
+  bytes body = 1;       // serialized CommandAck
+  bytes signature = 2;  // Ed25519(sk_sim_controller, "AERIS-v1/ack\0" || body)
+}

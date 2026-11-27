@@ -1,0 +1,33 @@
+[scenario]
+id = "s6"
+name = "GPS failure on A and compromise of B"
+description = "S2 and S4 at the same time."
+duration_s = 60.0
+
+[[faults]]
+kind = "gps_failure"
+node = "node-a"
+start_s = 30.0
+error_sigma_m = 35.0
+bias_walk_mps = 3.0
+
+[[faults]]
+kind = "compromise"
+node = "node-b"
+start_s = 30.0
+
+[faults.attacker]
+relay_integrity = 0.35
+observation_integrity = 0.0
+lateral_hazard_per_tick = 0.004
+cpu_extra_pct = 46.0
+mem_extra_pct = 38.0
+rogue_procs = 13
+rogue_process_name = "kworker-u8:3"
+rogue_process_hash = "9f2c4e1ab07d33e5c1f8a6b2d4e0c7f1"
+beacon_pkts_per_sec = 1250.0
+beacon_peers = 1
+auth_fail_rate_hz = 5.0
+auth_service = "sshd"
+auth_principal = "root"
+camera_report_offset_m = [18.0, -12.0]

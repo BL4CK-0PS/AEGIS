@@ -1,0 +1,127 @@
+# AERIS v0.1.0 — Frozen simulated world (docs/v0.1/01 "Simulated world", 06 "Frozen config files")
+# Owner: DHARSHAN
+#
+# Every value here is a property of the simulated world, its environment, or
+# AERIS's model of an attacker. None of them is an expected result. Mission
+# outcomes, rollout success rates and the chosen action must emerge from these
+# parameters through S(t+1) = F(S(t), a, W(t)); no code or test may hardcode them.
+#
+# Capability formulas (docs/v0.1/04 §6.7) evaluated on ground truth:
+#   c_comm = max over active, up links of  prod(hop availability) * prod(integrity of every node on the path)
+#   c_obs  = 1 - prod over active nodes of (1 - coverage * camera quality)
+#   c_nav  = min over active nodes of (1 - min(1, sigma_loc / sigma_max))
+
+[world]
+tick_hz = 10
+# Patrol area is a square [-half, +half]^2 metres; nodes reflect at the edges.
+area_half_width_m = 500.0
+
+[[nodes]]
+id = "node-a"
+position_m = [-200.0, 0.0]
+velocity_mps = [4.0, 1.0]
+coverage = 0.60          # params.toml area_coverage_per_node
+camera_quality = 0.948   # P(camera frame is usable) for a healthy node
+
+[[nodes]]
+id = "node-b"
+position_m = [0.0, 50.0]
+velocity_mps = [4.0, -1.0]
+coverage = 0.60
+camera_quality = 0.948
+
+[[nodes]]
+id = "node-c"
+position_m = [200.0, 0.0]
+velocity_mps = [4.0, 0.5]
+coverage = 0.60
+camera_quality = 0.948
+
+# L1: A–B–C, relayed through B. Active at start.
+[[links]]
+id = "link-l1"
+endpoints = ["node-a", "node-c"]
+via = ["node-b"]
+hop_availability = [0.99, 0.99]   # A–B, B–C
+latency_ms = [6.0, 6.0]
+loss = [0.005, 0.005]
+active = true
+
+# L2: direct A–C backup. Standby until a reroute activates it.
+[[links]]
+id = "link-l2"
+endpoints = ["node-a", "node-c"]
+via = []
+hop_availability = [0.93]
+latency_ms = [25.0]
+loss = [0.02]
+active = false
+
+[mission]
+# Communication is measured between these endpoints. node-a hosts the
+# ground-station uplink; a node whose events cannot reach node-a is partitioned.
+endpoints = ["node-a", "node-c"]
+uplink_node = "node-a"
+sigma_max_m = 30.0
+
+[mission.min]                 # c_k^min (params.toml [mission])
+navigation = 0.85
+communication = 0.90
+observation = 0.80
+
+# Minimum accepted while a capability is explicitly degraded by degrade(k).
+# v0.1 assumption (the source spec names degrade(k) but gives no fallback
+# minima): the mission continues on a reduced requirement.
+[mission.degraded_min]
+navigation = 0.70
+communication = 0.25
+observation = 0.50
+
+[sensors]
+gps_sigma_m = 2.5
+camera_sigma_m = 4.0
+imu_sigma_mps = 0.05
+# Growth of onboard localisation error per second with no usable position fix.
+dead_reckoning_drift_mps = 0.5
+gps_confidence = 0.95
+camera_confidence = 0.90
+imu_confidence = 0.98
+
+[telemetry]
+cpu_mean_pct = 42.0
+cpu_sd_pct = 1.5
+mem_mean_pct = 36.0
+mem_sd_pct = 0.5
+proc_count = 15
+pkts_mean_per_s = 220.0
+pkts_sd_per_s = 15.0
+bytes_per_pkt = 180.0
+peers = 2
+latency_jitter_ms = 1.5
+legit_auth_rate_hz = 0.05      # occasional legitimate maintenance logins
+legit_auth_service = "sshd"
+legit_auth_principal = "ops"
+link_status_period_ticks = 10  # 1 Hz link status from the uplink node
+
+[environment]
+process_noise_accel_mps2 = 0.05
+# Radio fades: each hop independently starts a fade with this probability per
+# tick; during a fade its availability is multiplied by the factor.
+fade_prob_per_tick = 0.0005
+fade_duration_ticks = 20
+fade_availability_factor = 0.5
+
+# Effects of actions on the world (ground truth and rollouts alike).
+[actions]
+# restrict(n) revokes privileges and external egress: it stops beaconing and
+# multiplies the node's lateral-movement hazard by this factor. It does not
+# remove an attacker already on the node, so a restricted relay is still untrusted.
+restrict_hazard_factor = 0.2
+
+# AERIS's *model* of a compromised node, used only in counterfactual rollouts
+# when the belief says a node may be compromised. The scenario files define the
+# ground-truth attacker separately; AERIS never sees those values.
+[threat_model]
+relay_integrity = 0.40          # fraction of relayed traffic a compromised node forwards faithfully
+observation_integrity = 0.0     # a compromised camera feed is unusable
+lateral_hazard_per_tick = 0.005 # P(compromise spreads to one reachable neighbour) per tick

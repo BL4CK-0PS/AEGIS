@@ -5,20 +5,92 @@ members = [
     "crates/aeris-decision",
     "crates/aeris-core",
     "crates/aeris-graph",
+    "crates/aeris-wire",
+    "crates/aeris-crypto",
+    "crates/aeris-sim",
+    "crates/aeris-exec",
     "apps/aeris-console",
+    "apps/aeris-simd",
+    "apps/aeris-harness",
 ]
-resolver = "2"
+resolver = "3"
 
 [workspace.package]
 version = "0.1.0"
-edition = "2021"
+edition = "2024"
+rust-version = "1.99"
 authors = ["Kishanth <kisanthr22@gmail.com>"]
 license = "Proprietary"
+publish = false
 
+# Versions follow docs/v0.1/02-team-stack-layout.md where the code allows it.
+# Deviation: rand 0.8 / rand_chacha 0.3 are kept (the stack table says 0.10)
+# because every existing crate is written against the 0.8 API; see
+# docs/audit/dharshan-initial-audit.md finding M-2.
 [workspace.dependencies]
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 toml = "0.8"
 rand = "0.8"
 rand_chacha = "0.3"
-petgraph = "0.8.3"
+petgraph = "0.8.3"   # aeris-graph (Kesivarshini, from origin/main b0d41bc)
+
+# Wire format (pure-Rust protobuf compiler: no protoc binary needed in CI).
+prost = "0.14.6"
+prost-build = "0.14.6"
+protox = "0.10.0"
+
+# Crypto.
+ed25519-dalek = "3.0.0"  # default features: fast, zeroize. Never enable legacy_compatibility.
+blake3 = "1.8.7"
+zeroize = "1.9"
+getrandom = "0.4"
+hex = "0.4.3"
+
+# Async, bus, observability (apps and aeris-exec only; algorithm crates do no I/O).
+tokio = { version = "1.54.1", features = ["rt-multi-thread", "macros", "time", "sync", "signal"] }
+async-nats = "0.53.0"
+futures = "0.3"
+bytes = "1"
+tracing = "0.1.44"
+tracing-subscriber = { version = "0.3.23", features = ["env-filter", "fmt"] }
+clap = { version = "4.6", features = ["derive", "env"] }
+thiserror = "2.0"
+uuid = { version = "1.29", features = ["v7", "serde"] }
+
+# PostgreSQL (harness audit store; synchronous client, no TLS on localhost).
+postgres = { version = "0.19", features = ["with-serde_json-1"] }
+
+# Tests.
+proptest = "1.12.0"
+tempfile = "3"
+
+# Rollouts (500 x 100 ticks per candidate) are the hot loop; optimise the
+# simulator even in debug/test builds so `cargo test` stays fast. Does not
+# change results (same code, same seeds).
+[profile.dev.package.aeris-sim]
+opt-level = 3
+# aeris-core re-plans (3 000 rollouts + scoring) on every tick an incident
+# stays open; the no-approval test keeps it open for the whole run.
+[profile.dev.package.aeris-core]
+opt-level = 3
+[profile.dev.package.aeris-decision]
+opt-level = 3
+[profile.dev.package.aeris-trust]
+opt-level = 3
+[profile.dev.package.aeris-wire]
+opt-level = 3
+[profile.dev.package.rand_chacha]
+opt-level = 3
+[profile.dev.package.blake3]
+opt-level = 3
+# Every closed-loop run signs and verifies ~9 000 events; unoptimised
+# curve25519 dominated `cargo test` time (G2 took >30 min in debug).
+[profile.dev.package.curve25519-dalek]
+opt-level = 3
+[profile.dev.package.ed25519-dalek]
+opt-level = 3
+[profile.dev.package.sha2]
+opt-level = 3
+[profile.dev.package.prost]
+opt-level = 3

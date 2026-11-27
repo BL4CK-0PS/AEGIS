@@ -1,2 +1,6 @@
+# Agreed v0.1 toolchain (docs/v0.1/02-team-stack-layout.md). Host-independent:
+# do not add a target triple here, rustup picks the host's.
 [toolchain]
-channel = "stable-x86_64-pc-windows-gnu"
+channel = "1.100.0"
+components = ["rustfmt", "clippy"]
+profile = "minimal"

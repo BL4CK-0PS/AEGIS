@@ -200,17 +200,10 @@ pub enum TrustDimension {
     Provenance = 5,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+/// Default is `[Beta::default(); 6]`, i.e. the Beta(9, 1) prior on every dimension.
+#[derive(Debug, Clone, Copy, PartialEq, Default, Serialize, Deserialize)]
 pub struct TrustVector {
     pub dims: [Beta; 6],
-}
-
-impl Default for TrustVector {
-    fn default() -> Self {
-        Self {
-            dims: [Beta::default(); 6],
-        }
-    }
 }
 
 impl TrustVector {
@@ -235,11 +228,12 @@ impl TrustVector {
         let default_w = [1.0 / 6.0; 6];
         let w = weights.unwrap_or(&default_w);
 
-        let mut log_sum = 0.0;
-        for i in 0..6 {
-            let m = self.dims[i].mean().clamp(1e-6, 1.0);
-            log_sum += w[i] * m.ln();
-        }
+        let log_sum: f64 = self
+            .dims
+            .iter()
+            .zip(w.iter())
+            .map(|(dim, wi)| wi * dim.mean().clamp(1e-6, 1.0).ln())
+            .sum();
         log_sum.exp()
     }
 
@@ -300,17 +294,18 @@ impl Action {
                 if has_isolate && has_reroute && actions.len() == 2 {
                     0.15
                 } else {
-                    actions.iter().map(|a| a.disruption_cost()).sum::<f64>().min(1.0)
+                    actions
+                        .iter()
+                        .map(|a| a.disruption_cost())
+                        .sum::<f64>()
+                        .min(1.0)
                 }
             }
         }
     }
 
     pub fn is_reversible(&self) -> bool {
-        match self {
-            Action::Degrade(_) => false,
-            _ => true,
-        }
+        !matches!(self, Action::Degrade(_))
     }
 
     pub fn impact_class(&self, target_criticality: f64) -> ImpactClass {
@@ -377,10 +372,19 @@ pub enum Invariant {
 impl fmt::Display for Invariant {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Invariant::I1_NoSeverLastCommPath => write!(f, "I1: Never remove last active communication path"),
-            Invariant::I2_NoIsolateSoleCapabilityProvider => write!(f, "I2: Never isolate sole provider of required capability"),
-            Invariant::I3_EntityMustExistAndNotRedundant => write!(f, "I3: Target entity must exist and not be redundant"),
-            Invariant::I4_DegradedModelRestrictedToLow => write!(f, "I4: While model degraded, only LOW impact actions allowed"),
+            Invariant::I1_NoSeverLastCommPath => {
+                write!(f, "I1: Never remove last active communication path")
+            }
+            Invariant::I2_NoIsolateSoleCapabilityProvider => {
+                write!(f, "I2: Never isolate sole provider of required capability")
+            }
+            Invariant::I3_EntityMustExistAndNotRedundant => {
+                write!(f, "I3: Target entity must exist and not be redundant")
+            }
+            Invariant::I4_DegradedModelRestrictedToLow => write!(
+                f,
+                "I4: While model degraded, only LOW impact actions allowed"
+            ),
         }
     }
 }
@@ -476,12 +480,37 @@ pub struct Hlc {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum EventPayload {
-    Telemetry { cpu: f64, mem: f64, proc_count: u32 },
-    Net { pkts_per_sec: f64, bytes_per_sec: f64, loss: f64, latency_ms: f64 },
-    Auth { service: String, success: bool, principal: String },
-    Process { name: String, started: bool, hash: String },
-    Sensor { kind: String, value: Vec<f64>, sigma: f64 },
-    Link { link_id: LinkId, up: bool, availability: f64 },
+    Telemetry {
+        cpu: f64,
+        mem: f64,
+        proc_count: u32,
+    },
+    Net {
+        pkts_per_sec: f64,
+        bytes_per_sec: f64,
+        loss: f64,
+        latency_ms: f64,
+    },
+    Auth {
+        service: String,
+        success: bool,
+        principal: String,
+    },
+    Process {
+        name: String,
+        started: bool,
+        hash: String,
+    },
+    Sensor {
+        kind: String,
+        value: Vec<f64>,
+        sigma: f64,
+    },
+    Link {
+        link_id: LinkId,
+        up: bool,
+        availability: f64,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -521,7 +550,11 @@ pub type AnomalyDetectorFn = fn(events: &[VerifiedEvent]) -> Vec<Evidence>;
 pub type HypothesisFusionFn = fn(evidence: &[Evidence]) -> Posterior;
 pub type TrustUpdaterFn = fn(current: &mut TrustVector, evidence: &[Evidence], dt: f64);
 pub type ActionGeneratorFn = fn(entity: &EntityId, active_links: &[LinkId]) -> Vec<Action>;
-pub type InvariantCheckerFn = fn(action: &Action, active_links: &[LinkId], active_nodes: &[EntityId]) -> Result<(), Invariant>;
+pub type InvariantCheckerFn = fn(
+    action: &Action,
+    active_links: &[LinkId],
+    active_nodes: &[EntityId],
+) -> Result<(), Invariant>;
 
 #[cfg(test)]
 mod tests {
@@ -542,12 +575,12 @@ mod tests {
         // Set dimensions as in worked example §6.6:
         // [identity: 0.97, integrity: 0.94, behaviour: 0.44, telemetry: 0.44, network: 0.22, provenance: 0.83]
         // Geometric mean: (0.97 * 0.94 * 0.44 * 0.44 * 0.22 * 0.83)^(1/6) ≈ 0.565
-        tv.dims[0] = Beta::new(97.0, 3.0);   // ~0.97
-        tv.dims[1] = Beta::new(94.0, 6.0);   // ~0.94
-        tv.dims[2] = Beta::new(44.0, 56.0);  // ~0.44
-        tv.dims[3] = Beta::new(44.0, 56.0);  // ~0.44
-        tv.dims[4] = Beta::new(22.0, 78.0);  // ~0.22
-        tv.dims[5] = Beta::new(83.0, 17.0);  // ~0.83
+        tv.dims[0] = Beta::new(97.0, 3.0); // ~0.97
+        tv.dims[1] = Beta::new(94.0, 6.0); // ~0.94
+        tv.dims[2] = Beta::new(44.0, 56.0); // ~0.44
+        tv.dims[3] = Beta::new(44.0, 56.0); // ~0.44
+        tv.dims[4] = Beta::new(22.0, 78.0); // ~0.22
+        tv.dims[5] = Beta::new(83.0, 17.0); // ~0.83
 
         let agg = tv.aggregate(None);
         assert!((agg - 0.565).abs() < 0.015, "Expected ~0.565, got {}", agg);

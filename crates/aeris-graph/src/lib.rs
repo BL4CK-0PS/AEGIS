@@ -1,7 +1,7 @@
 use aeris_types::{Capability, EntityId, LinkId};
+use petgraph::Direction::{Incoming, Outgoing};
 use petgraph::graph::{DiGraph, EdgeIndex, NodeIndex};
 use petgraph::visit::EdgeRef;
-use petgraph::Direction::{Incoming, Outgoing};
 use std::collections::{HashMap, HashSet, VecDeque};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -212,11 +212,7 @@ impl GraphModel {
             .filter_map(|id| self.node_index(id))
             .map(|index| self.graph[index].criticality)
             .sum();
-        let total: f64 = self
-            .graph
-            .node_weights()
-            .map(|node| node.criticality)
-            .sum();
+        let total: f64 = self.graph.node_weights().map(|node| node.criticality).sum();
         let normalized = if total == 0.0 { 0.0 } else { raw / total };
         Ok((raw, normalized))
     }
@@ -323,6 +319,8 @@ impl GraphModel {
         score.clamp(0.0, 1.0)
     }
 
+    // Recursive DFS state is threaded explicitly; bundling it would only obscure the recursion.
+    #[allow(clippy::too_many_arguments)]
     fn communication_dfs<F>(
         &self,
         current: NodeIndex,
@@ -431,11 +429,7 @@ mod tests {
 
         assert_eq!(
             graph
-                .add_edge(
-                    &a,
-                    &b,
-                    edge(EdgeKind::RoutesThrough, None, 0.99, true)
-                )
+                .add_edge(&a, &b, edge(EdgeKind::RoutesThrough, None, 0.99, true))
                 .unwrap_err(),
             GraphError::MissingLinkId {
                 kind: EdgeKind::RoutesThrough,
@@ -456,11 +450,7 @@ mod tests {
         );
 
         graph
-            .add_edge(
-                &a,
-                &b,
-                edge(EdgeKind::DependsOn, None, 0.99, true),
-            )
+            .add_edge(&a, &b, edge(EdgeKind::DependsOn, None, 0.99, true))
             .unwrap();
     }
 
@@ -579,11 +569,7 @@ mod tests {
             .unwrap();
 
         let trust = |id: &EntityId| {
-            if id.as_str() == "node-b" {
-                0.92
-            } else {
-                1.0
-            }
+            if id.as_str() == "node-b" { 0.92 } else { 1.0 }
         };
 
         let all_active: HashSet<EntityId> = [a.clone(), b.clone(), c.clone()].into();

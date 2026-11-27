@@ -1,0 +1,12 @@
+[scenario]
+id = "s5"
+name = "False telemetry from node B"
+description = "node-b (identity intact, signatures valid) reports positions that drift away from its true track and a flat-lined CPU metric."
+duration_s = 60.0
+
+[[faults]]
+kind = "false_telemetry"
+node = "node-b"
+start_s = 30.0
+position_drift_mps = [2.5, -1.5]
+flatline_cpu = true

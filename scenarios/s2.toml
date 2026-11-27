@@ -1,0 +1,12 @@
+[scenario]
+id = "s2"
+name = "GPS failure on node A"
+description = "node-a's GPS receiver fails: readings carry large noise and a wandering bias while the reported sigma stays nominal."
+duration_s = 60.0
+
+[[faults]]
+kind = "gps_failure"
+node = "node-a"
+start_s = 30.0
+error_sigma_m = 35.0
+bias_walk_mps = 3.0

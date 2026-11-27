@@ -1,0 +1,93 @@
+// AERIS v0.1 event wire format.
+// Owner: DHARSHAN. Contract: docs/v0.1/06-contracts.md ("Wire format").
+//
+// Compatibility rules (proto3):
+//   * Never renumber or reuse a field number; reserve removed ones.
+//   * New fields are additive; decoders skip unknown fields.
+//   * Enum value 0 is always *_UNSPECIFIED and is rejected by validation.
+//
+// What travels over NATS (subject aeris.events.<node>) is an Envelope. The
+// signature covers the exact `body` bytes that are transmitted, prefixed by the
+// domain-separation tag "AERIS-v1/event\0" (see aeris-crypto). The receiver
+// verifies those bytes as received and never re-encodes them.
+syntax = "proto3";
+package aeris.v1;
+
+message Envelope {
+  bytes body = 1;       // serialized Body
+  bytes signature = 2;  // Ed25519(sk_source_node, "AERIS-v1/event\0" || body), 64 bytes
+}
+
+message Body {
+  string id = 1;          // UUIDv7, canonical hyphenated lowercase
+  string source = 2;      // "node-b" or "node-b/gps"; the key is looked up by the node part
+  uint64 seq = 3;         // strictly increasing per source, starts at 1
+  Hlc hlc = 4;            // hybrid logical clock at send time
+  int64 t_unix_ms = 5;    // physical time of the observation (ms since Unix epoch)
+  bool replayed = 6;      // true when sent from a partition/outage buffer (S7)
+  optional double confidence = 7;  // producer's confidence in the reading, [0, 1]
+  Provenance provenance = 8;       // who produced the reading
+  oneof payload {
+    Telemetry telemetry = 10;  // cpu, mem, process count
+    NetStats net = 11;         // pkts/s, bytes/s, peers, latency, loss
+    AuthEvent auth = 12;       // service, success, principal
+    ProcessEvent proc = 13;    // started/stopped, name, hash
+    SensorReading sensor = 14; // kind (gps/imu/camera), value, sigma
+    LinkStatus link = 15;      // link id, up, availability
+  }
+}
+
+message Hlc {
+  int64 l = 1;   // largest physical time seen (ms)
+  uint32 c = 2;  // logical counter
+}
+
+message Provenance {
+  string producer = 1;          // e.g. "aeris-sim/node-b/gps"
+  string producer_version = 2;  // e.g. "0.1.0"
+}
+
+message Telemetry {
+  double cpu_pct = 1;    // [0, 100]
+  double mem_pct = 2;    // [0, 100]
+  uint32 proc_count = 3;
+}
+
+message NetStats {
+  double pkts_per_sec = 1;
+  double bytes_per_sec = 2;
+  uint32 peers = 3;
+  double latency_ms = 4;
+  double loss = 5;        // [0, 1]
+}
+
+message AuthEvent {
+  string service = 1;
+  bool success = 2;
+  string principal = 3;
+}
+
+message ProcessEvent {
+  string name = 1;
+  bool started = 2;
+  string hash = 3;        // hex digest of the binary
+}
+
+enum SensorKind {
+  SENSOR_KIND_UNSPECIFIED = 0;
+  SENSOR_KIND_GPS = 1;
+  SENSOR_KIND_IMU = 2;
+  SENSOR_KIND_CAMERA = 3;
+}
+
+message SensorReading {
+  SensorKind kind = 1;
+  repeated double value = 2;  // gps/camera: [x_m, y_m]; imu: [vx_mps, vy_mps]
+  double sigma = 3;           // reported 1-sigma measurement noise, same unit as value
+}
+
+message LinkStatus {
+  string link_id = 1;
+  bool up = 2;
+  double availability = 3;    // [0, 1]
+}

@@ -1,0 +1,10 @@
+[scenario]
+id = "s8"
+name = "Model mismatch"
+description = "Unmodelled gusts: true accelerations far exceed the estimator's process model, so innovations stop being consistent."
+duration_s = 60.0
+
+[[faults]]
+kind = "model_mismatch"
+start_s = 30.0
+accel_sigma_mps2 = 4.0

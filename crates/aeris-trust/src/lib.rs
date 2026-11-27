@@ -209,15 +209,15 @@ impl TrustRegistry {
     }
 
     pub fn register_node_with_prior(&mut self, entity: EntityId, alpha: f64, beta: f64) {
-        self.nodes.entry(entity.clone()).or_insert_with(|| {
-            EntityTrustTracker::with_prior(entity, alpha, beta, self.params)
-        });
+        self.nodes
+            .entry(entity.clone())
+            .or_insert_with(|| EntityTrustTracker::with_prior(entity, alpha, beta, self.params));
     }
 
     pub fn register_sensor(&mut self, sensor_id: EntityId) {
-        self.sensors.entry(sensor_id.clone()).or_insert_with(|| {
-            SensorTrustTracker::new(sensor_id)
-        });
+        self.sensors
+            .entry(sensor_id.clone())
+            .or_insert_with(|| SensorTrustTracker::new(sensor_id));
     }
 
     pub fn update_from_evidence(&mut self, evidence_list: &[Evidence]) {
@@ -262,26 +262,58 @@ mod tests {
             tracker.update_dimension(TrustDimension::Behaviour, 0.9, Some(1.0));
         }
         let b3 = tracker.vector.dimension(TrustDimension::Behaviour);
-        assert!((b3.alpha - 8.00).abs() < 0.05, "alpha expected ~8.00, got {}", b3.alpha);
-        assert!((b3.beta - 3.43).abs() < 0.05, "beta expected ~3.43, got {}", b3.beta);
-        assert!((b3.mean() - 0.700).abs() < 0.015, "trust expected ~0.700, got {}", b3.mean());
-        assert!((b3.std_dev() - 0.130).abs() < 0.01, "std dev expected ~0.130, got {}", b3.std_dev());
+        assert!(
+            (b3.alpha - 8.00).abs() < 0.05,
+            "alpha expected ~8.00, got {}",
+            b3.alpha
+        );
+        assert!(
+            (b3.beta - 3.43).abs() < 0.05,
+            "beta expected ~3.43, got {}",
+            b3.beta
+        );
+        assert!(
+            (b3.mean() - 0.700).abs() < 0.015,
+            "trust expected ~0.700, got {}",
+            b3.mean()
+        );
+        assert!(
+            (b3.std_dev() - 0.130).abs() < 0.01,
+            "std dev expected ~0.130, got {}",
+            b3.std_dev()
+        );
 
         // Tick 4, 5, 6
         for _ in 3..6 {
             tracker.update_dimension(TrustDimension::Behaviour, 0.9, Some(1.0));
         }
         let b6 = tracker.vector.dimension(TrustDimension::Behaviour);
-        assert!((b6.mean() - 0.565).abs() < 0.015, "trust expected ~0.565, got {}", b6.mean());
-        assert!((b6.std_dev() - 0.134).abs() < 0.01, "std dev expected ~0.134, got {}", b6.std_dev());
+        assert!(
+            (b6.mean() - 0.565).abs() < 0.015,
+            "trust expected ~0.565, got {}",
+            b6.mean()
+        );
+        assert!(
+            (b6.std_dev() - 0.134).abs() < 0.01,
+            "std dev expected ~0.134, got {}",
+            b6.std_dev()
+        );
 
         // Tick 7..10
         for _ in 6..10 {
             tracker.update_dimension(TrustDimension::Behaviour, 0.9, Some(1.0));
         }
         let b10 = tracker.vector.dimension(TrustDimension::Behaviour);
-        assert!((b10.mean() - 0.442).abs() < 0.015, "trust expected ~0.442, got {}", b10.mean());
-        assert!((b10.std_dev() - 0.128).abs() < 0.01, "std dev expected ~0.128, got {}", b10.std_dev());
+        assert!(
+            (b10.mean() - 0.442).abs() < 0.015,
+            "trust expected ~0.442, got {}",
+            b10.mean()
+        );
+        assert!(
+            (b10.std_dev() - 0.128).abs() < 0.01,
+            "std dev expected ~0.128, got {}",
+            b10.std_dev()
+        );
 
         // Now test recovery: if B behaves well (s = 0.05)
         // after 10 good ticks: ~0.690
@@ -289,21 +321,33 @@ mod tests {
             tracker.update_dimension(TrustDimension::Behaviour, 0.05, Some(1.0));
         }
         let b_rec10 = tracker.vector.dimension(TrustDimension::Behaviour);
-        assert!((b_rec10.mean() - 0.690).abs() < 0.03, "recovery at 10 ticks expected ~0.690, got {}", b_rec10.mean());
+        assert!(
+            (b_rec10.mean() - 0.690).abs() < 0.03,
+            "recovery at 10 ticks expected ~0.690, got {}",
+            b_rec10.mean()
+        );
 
         // after 20 total good ticks: ~0.807
         for _ in 0..10 {
             tracker.update_dimension(TrustDimension::Behaviour, 0.05, Some(1.0));
         }
         let b_rec20 = tracker.vector.dimension(TrustDimension::Behaviour);
-        assert!((b_rec20.mean() - 0.807).abs() < 0.03, "recovery at 20 ticks expected ~0.807, got {}", b_rec20.mean());
+        assert!(
+            (b_rec20.mean() - 0.807).abs() < 0.03,
+            "recovery at 20 ticks expected ~0.807, got {}",
+            b_rec20.mean()
+        );
 
         // after 40 total good ticks: ~0.902
         for _ in 0..20 {
             tracker.update_dimension(TrustDimension::Behaviour, 0.05, Some(1.0));
         }
         let b_rec40 = tracker.vector.dimension(TrustDimension::Behaviour);
-        assert!((b_rec40.mean() - 0.902).abs() < 0.03, "recovery at 40 ticks expected ~0.902, got {}", b_rec40.mean());
+        assert!(
+            (b_rec40.mean() - 0.902).abs() < 0.03,
+            "recovery at 40 ticks expected ~0.902, got {}",
+            b_rec40.mean()
+        );
     }
 
     #[test]
