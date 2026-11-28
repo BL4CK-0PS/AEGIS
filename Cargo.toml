@@ -9,6 +9,8 @@ members = [
     "crates/aeris-explain",
     "crates/aeris-core",
     "crates/aeris-graph",
+    "crates/aeris-mission",
+    "crates/aeris-policy",
     "crates/aeris-wire",
     "crates/aeris-crypto",
     "crates/aeris-sim",

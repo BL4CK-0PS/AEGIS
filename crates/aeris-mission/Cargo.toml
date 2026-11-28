@@ -1,0 +1,13 @@
+[package]
+name = "aeris-mission"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "Capabilities, mission score, counterfactual criticality, blast radius and risk for AERIS (docs/v0.1/04 §6.7-6.9)"
+
+[dependencies]
+aeris-types = { path = "../aeris-types" }
+aeris-graph = { path = "../aeris-graph" }
+serde = { workspace = true }

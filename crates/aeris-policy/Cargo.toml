@@ -1,0 +1,13 @@
+[package]
+name = "aeris-policy"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "Hard safety invariants I1-I4 and the autonomy gate for AERIS (docs/v0.1/04 §6.12); independent of the optimizer"
+
+[dependencies]
+aeris-types = { path = "../aeris-types" }
+aeris-mission = { path = "../aeris-mission" }
+serde = { workspace = true }

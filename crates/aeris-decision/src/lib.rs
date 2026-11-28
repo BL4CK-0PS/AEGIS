@@ -4,7 +4,7 @@
 //! Defined in docs/v0.1/04-mathematical-model.md §6.10, §6.11, §6.12.
 //! Owner: KISHANTH
 
-use aeris_types::{Action, Candidate, EntityId, Gate, ImpactClass, Invariant, LinkId, Proposal};
+use aeris_types::{Action, Candidate, EntityId, LinkId, Proposal};
 use serde::{Deserialize, Serialize};
 
 /// Hyperparameters for decision scoring and constraints.
@@ -157,45 +157,6 @@ pub fn generate_candidates_for_incident(
     ]
 }
 
-/// Safety policy checking hard invariants before scoring:
-/// - Invariant I1: Never remove the last active communication path
-/// - Invariant I2: Never isolate sole provider of required capability unless restored
-pub fn check_hard_invariants(
-    action: &Action,
-    target_node: &str,
-    primary_link_active: bool,
-    backup_link_active: bool,
-    target_is_sole_comm_relay: bool,
-) -> Vec<Invariant> {
-    let mut violations = Vec::new();
-
-    match action {
-        Action::Isolate(entity) if entity == target_node => {
-            // Isolating target node B alone when L1 is active and L2 is not active
-            // severs the last active communication path A-B-C!
-            if target_is_sole_comm_relay && primary_link_active && !backup_link_active {
-                violations.push(Invariant::I1_NoSeverLastCommPath);
-                violations.push(Invariant::I2_NoIsolateSoleCapabilityProvider);
-            }
-        }
-        Action::Combo(actions) => {
-            let has_isolate = actions
-                .iter()
-                .any(|a| matches!(a, Action::Isolate(e) if e == target_node));
-            let has_reroute = actions.iter().any(|a| matches!(a, Action::Reroute(_)));
-
-            // If isolating without rerouting, it violates I1
-            if has_isolate && !has_reroute && target_is_sole_comm_relay && !backup_link_active {
-                violations.push(Invariant::I1_NoSeverLastCommPath);
-            }
-            // If combo includes reroute, backup link is activated simultaneously, so I1 is satisfied!
-        }
-        _ => {}
-    }
-
-    violations
-}
-
 /// Checks the chance constraint on failure rate:
 /// (1 - P(success|a)) + z * SE <= epsilon
 pub fn passes_chance_constraint(cand: &Candidate, params: &DecisionParams) -> bool {
@@ -254,42 +215,21 @@ pub fn optimize_decision(
         )
     };
 
-    // 3. Autonomy Gate evaluation
-    let impact = chosen.action.impact_class(target_criticality);
-    let is_reversible = chosen.action.is_reversible();
-
-    let gate = if fallback_forced_review {
-        Gate::HumanReview {
-            reason: "No candidate option meets the failure bound epsilon".to_string(),
-        }
-    } else if impact != ImpactClass::Low {
-        Gate::HumanReview {
-            reason: format!(
-                "Action has {:?} impact on mission (criticality {:.2})",
-                impact, target_criticality
-            ),
-        }
-    } else if decision_uncertainty >= params.theta_u {
-        Gate::HumanReview {
-            reason: format!(
-                "Decision uncertainty {:.3} exceeds threshold {:.2}",
-                decision_uncertainty, params.theta_u
-            ),
-        }
-    } else if !is_reversible {
-        Gate::HumanReview {
-            reason: "Action is not fully reversible".to_string(),
-        }
-    } else if model_health < params.model_health_min {
-        Gate::HumanReview {
-            reason: format!(
-                "Model health {:.2} is below threshold {:.2}",
-                model_health, params.model_health_min
-            ),
-        }
-    } else {
-        Gate::Auto
-    };
+    // 3. Autonomy gate: owned by aeris-policy, not by the optimizer (§6.12).
+    let gate = aeris_policy::autonomy_gate(
+        &aeris_policy::GateInput {
+            action: &chosen.action,
+            target_criticality,
+            uncertainty: decision_uncertainty,
+            model_health,
+            no_option_meets_bound: fallback_forced_review,
+        },
+        &chosen.violations,
+        &aeris_policy::GateParams {
+            theta_u: params.theta_u,
+            model_health_min: params.model_health_min,
+        },
+    );
 
     Proposal {
         id: decision_id,
@@ -305,6 +245,7 @@ pub fn optimize_decision(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use aeris_types::{Gate, Invariant};
 
     /// Verifies the exact worked numbers from docs/v0.1/04-mathematical-model.md §6.11:
     ///
@@ -335,13 +276,9 @@ mod tests {
 
         // 3. Isolate B only (violates I1)
         let mut c_isolate = evaluate_summary(Action::Isolate("node-b".into()), 0.0, 500, &params);
-        c_isolate.violations = check_hard_invariants(
-            &c_isolate.action,
-            "node-b",
-            true,  // primary link L1 active
-            false, // backup link L2 inactive
-            true,  // node B is sole comm relay
-        );
+        // Invariant verdicts come from aeris-policy (tested there); the
+        // optimizer must never pick a vetoed candidate.
+        c_isolate.violations = vec![Invariant::I1_NoSeverLastCommPath];
         assert!(
             c_isolate
                 .violations
@@ -353,12 +290,7 @@ mod tests {
             Action::Isolate("node-b".into()),
             Action::Reroute("link-l2".into()),
         ]);
-        let mut c_combo = evaluate_summary(combo.clone(), 0.94, 500, &params);
-        c_combo.violations = check_hard_invariants(&c_combo.action, "node-b", true, false, true);
-        assert!(
-            c_combo.violations.is_empty(),
-            "Combo must satisfy I1 because L2 is activated simultaneously"
-        );
+        let c_combo = evaluate_summary(combo.clone(), 0.94, 500, &params);
         assert!((c_combo.exp_utility - 0.790).abs() < 1e-3);
         assert!((c_combo.cvar - 0.750).abs() < 1e-3);
         assert!((c_combo.score - 0.415).abs() < 1e-3);

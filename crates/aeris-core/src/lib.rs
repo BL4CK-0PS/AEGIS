@@ -8,12 +8,13 @@
 
 use aeris_anomaly::AnomalyEngine;
 use aeris_decision::{
-    DecisionParams, check_hard_invariants, evaluate_rollout_samples, evaluate_summary,
-    generate_candidates_for_incident, optimize_decision,
+    DecisionParams, evaluate_rollout_samples, evaluate_summary, generate_candidates_for_incident,
+    optimize_decision,
 };
 use aeris_estimator::{DiscreteNodeState, SwarmEstimator};
 use aeris_explain::{ExplanationContext, ExplanationEngine};
 use aeris_fusion::FusionEngine;
+use aeris_mission::{Capabilities, LinkView, Minima, NodeView, Topology};
 use aeris_trust::{TrustParams, TrustRegistry};
 use aeris_types::{
     Action, Capability, CycleOutput, EntityId, EventPayload, Gate, Incident, IncidentStatus,
@@ -82,6 +83,21 @@ impl CoreState {
         trust_reg.register_sensor("node-a/gps".into());
         trust_reg.register_sensor("node-b/gps".into());
         trust_reg.register_sensor("node-c/gps".into());
+        // Camera reliability prior T^obs = camera_quality from docs/spec/world.toml,
+        // with the same evidence mass (alpha + beta) as the default sensor prior.
+        if let Some(cfg) = rollout_config() {
+            for n in &cfg.nodes {
+                let id = format!("{}/camera", n.id);
+                trust_reg.register_sensor(id.clone());
+                if let Some(t) = trust_reg.sensors.get_mut(&id) {
+                    let mass = t.beta.alpha + t.beta.beta;
+                    t.beta = aeris_types::Beta::new(
+                        mass * n.camera_quality,
+                        mass * (1.0 - n.camera_quality),
+                    );
+                }
+            }
+        }
 
         let mut nodes = HashMap::new();
         nodes.insert("node-a".into(), NodeStatus::Healthy);
@@ -114,6 +130,17 @@ impl CoreState {
             },
         );
 
+        // Kalman filters start from the known launch state (world.toml), not the origin.
+        let mut swarm_estimator = SwarmEstimator::default();
+        if let Some(cfg) = rollout_config() {
+            for n in &cfg.nodes {
+                if let Some(kf) = swarm_estimator.kalman_filters.get_mut(&n.id) {
+                    kf.state.p = n.position_m[0];
+                    kf.state.v = n.velocity_mps[0];
+                }
+            }
+        }
+
         Self {
             tick: 0,
             mode: Mode::Normal,
@@ -130,107 +157,90 @@ impl CoreState {
             processed_event_seqs: HashSet::new(),
             anomaly_engine: AnomalyEngine::default(),
             fusion_engine: FusionEngine::default(),
-            swarm_estimator: SwarmEstimator::default(),
-            explainer: ExplanationEngine::default(),
+            swarm_estimator,
+            explainer: ExplanationEngine,
         }
     }
 
-    /// Evaluates current operational capabilities based on graph & trust:
-    /// - c_comm = max_{active paths A->C} (prod_e avail_e * prod_{v in interior} T_v)
-    /// - c_obs  = 1 - prod_{v in active} (1 - cov_v * T_v^obs)
-    /// - c_nav  = min_{v in active} (1 - min(1, sqrt(P_v) / sigma_max))
-    pub fn compute_capabilities(&self) -> Vec<(Capability, f64)> {
-        // Communication
-        let mut comm_score = 0.0f64;
-
-        if let Some(l1) = self.links.get("link-l1")
-            && l1.active
-        {
-            let node_b_trust = self.trust_registry.node_trust("node-b").unwrap_or(0.90);
-            let b_status = self.nodes.get("node-b").unwrap_or(&NodeStatus::Healthy);
-            if *b_status != NodeStatus::Isolated {
-                // Availability = 0.99 * 0.99 * T_b = 0.9801 * T_b
-                let path1 = 0.99 * 0.99 * node_b_trust;
-                if path1 > comm_score {
-                    comm_score = path1;
-                }
-            }
-        }
-
-        if let Some(l2) = self.links.get("link-l2")
-            && l2.active
-        {
-            // Direct link A-C has no interior relay node
-            let path2 = l2.availability;
-            if path2 > comm_score {
-                comm_score = path2;
-            }
-        }
-
-        // Observation
-        // When 3 nodes active: 0.920; when 2 nodes active (B isolated): 0.815 (both >= 0.80 min)
-        let mut active_count = 0;
-        for node_id in &["node-a", "node-b", "node-c"] {
-            let status = self.nodes.get(*node_id).unwrap_or(&NodeStatus::Healthy);
-            if *status != NodeStatus::Isolated {
-                active_count += 1;
-            }
-        }
-        let obs_score = match active_count {
-            3 => 0.920,
-            2 => 0.815,
-            1 => 0.570,
-            _ => 0.000,
+    /// AERIS's own view of the world for the mission model: topology and
+    /// constants from `docs/spec/world.toml`, activity from executed actions,
+    /// trust from `aeris-trust`, localisation variance from `aeris-estimator`.
+    /// Never ground truth.
+    pub fn topology(&self) -> Topology {
+        let prior = aeris_types::Beta::default().mean();
+        let unmet = Minima {
+            navigation: 1.0,
+            communication: 1.0,
+            observation: 1.0,
         };
-
-        // Navigation (default healthy ~0.930)
-        let nav_score = 0.930f64;
-
-        vec![
-            (Capability::Navigation, nav_score),
-            (Capability::Communication, comm_score),
-            (Capability::Observation, obs_score),
-        ]
-    }
-
-    /// Continuous mission score:
-    /// M(G) = prod_k min(1, c_k / c_k^min)
-    pub fn compute_mission_score(&self, capabilities: &[(Capability, f64)]) -> f64 {
-        let mut score = 1.0f64;
-        let c_min_nav = 0.85;
-        let c_min_comm = 0.90;
-        let c_min_obs = 0.80;
-
-        for (cap, val) in capabilities {
-            let c_min = match cap {
-                Capability::Navigation => c_min_nav,
-                Capability::Communication => c_min_comm,
-                Capability::Observation => c_min_obs,
+        let Some(cfg) = rollout_config() else {
+            return Topology {
+                nodes: Vec::new(),
+                links: Vec::new(),
+                endpoints: [String::new(), String::new()],
+                minima: unmet,
+                degraded_minima: unmet,
+                sigma_max: 0.0,
             };
-            let ratio = (val / c_min).min(1.0);
-            score *= ratio;
+        };
+        let minima = |m: &aeris_sim::config::CapabilityMinima| Minima {
+            navigation: m.navigation,
+            communication: m.communication,
+            observation: m.observation,
+        };
+        let nodes = cfg
+            .nodes
+            .iter()
+            .map(|n| NodeView {
+                id: n.id.clone(),
+                active: self.nodes.get(&n.id) != Some(&NodeStatus::Isolated),
+                trust: self.trust_registry.node_trust(&n.id).unwrap_or(prior),
+                coverage: n.coverage,
+                obs_trust: self
+                    .trust_registry
+                    .sensor_trust(&format!("{}/camera", n.id))
+                    .unwrap_or(n.camera_quality),
+                position_variance: self
+                    .swarm_estimator
+                    .kalman_filters
+                    .get(&n.id)
+                    .map_or(f64::INFINITY, |kf| kf.state.cov[0][0]),
+            })
+            .collect();
+        let links = cfg
+            .links
+            .iter()
+            .map(|l| LinkView {
+                id: l.id.clone(),
+                endpoints: l.endpoints.clone(),
+                via: l.via.clone(),
+                hop_availability: l.hop_availability.clone(),
+                active: self.links.get(&l.id).map_or(l.active, |s| s.active),
+            })
+            .collect();
+        Topology {
+            nodes,
+            links,
+            endpoints: cfg.mission.endpoints.clone(),
+            minima: minima(&cfg.mission.min),
+            degraded_minima: minima(&cfg.mission.degraded_min),
+            sigma_max: cfg.mission.sigma_max_m,
         }
-        score
     }
 
-    /// Evaluates counterfactual criticality for an entity:
-    /// C_i = (M(G) - M(G \ v_i)) / M(G)
+    /// Capability levels c_k (§6.7), computed by `aeris-mission`.
+    pub fn compute_capabilities(&self) -> Vec<(Capability, f64)> {
+        self.topology().capabilities().as_vec()
+    }
+
+    /// Continuous mission score M(G) against the minima in `docs/spec/world.toml`.
+    pub fn compute_mission_score(&self, capabilities: &[(Capability, f64)]) -> f64 {
+        aeris_mission::mission_score(&caps_from_vec(capabilities), &self.topology().minima)
+    }
+
+    /// Counterfactual criticality C_i = (M(G) - M(G minus v_i)) / M(G).
     pub fn compute_criticality(&self, entity: &str) -> f64 {
-        let caps = self.compute_capabilities();
-        let m_full = self.compute_mission_score(&caps);
-        if m_full <= 0.0 {
-            return 0.0;
-        }
-
-        // Clone state and isolate entity counterfactually
-        let mut counterfactual_state = self.clone();
-        counterfactual_state
-            .nodes
-            .insert(entity.to_string(), NodeStatus::Isolated);
-        let cf_caps = counterfactual_state.compute_capabilities();
-        let m_removed = counterfactual_state.compute_mission_score(&cf_caps);
-
-        ((m_full - m_removed) / m_full).clamp(0.0, 1.0)
+        self.topology().criticality(entity)
     }
 
     /// Applies an action directly to state (execution stage)
@@ -270,6 +280,15 @@ impl CoreState {
                 }
             }
         }
+    }
+}
+
+fn caps_from_vec(v: &[(Capability, f64)]) -> Capabilities {
+    let get = |c: Capability| v.iter().find(|(k, _)| *k == c).map_or(0.0, |(_, x)| *x);
+    Capabilities {
+        navigation: get(Capability::Navigation),
+        communication: get(Capability::Communication),
+        observation: get(Capability::Observation),
     }
 }
 
@@ -384,11 +403,14 @@ pub fn step(state: &mut CoreState, events: &[VerifiedEvent], seed: u64) -> Cycle
     for ev in &valid_events {
         if let EventPayload::Sensor { kind, value, sigma } = &ev.payload {
             let sensor_entity = format!("{}/{}", ev.source, kind);
-            let t_obs = state.trust_registry.sensor_trust(&sensor_entity).unwrap_or(0.90);
-            if let Some(val) = value.first() {
-                if let Some(kf) = state.swarm_estimator.kalman_filters.get_mut(&ev.source) {
-                    kf.update_sensor(*val, *sigma, t_obs);
-                }
+            let t_obs = state
+                .trust_registry
+                .sensor_trust(&sensor_entity)
+                .unwrap_or(0.90);
+            if let Some(val) = value.first()
+                && let Some(kf) = state.swarm_estimator.kalman_filters.get_mut(&ev.source)
+            {
+                kf.update_sensor(*val, *sigma, t_obs);
             }
         }
     }
@@ -420,32 +442,32 @@ pub fn step(state: &mut CoreState, events: &[VerifiedEvent], seed: u64) -> Cycle
     let capabilities = state.compute_capabilities();
     let mission_score = state.compute_mission_score(&capabilities);
 
+    let topology = state.topology();
     let mut risks = Vec::new();
-    let mut high_risk_entity: Option<EntityId> = None;
+    // (entity, risk, posterior) of the highest-risk node above the containment threshold.
+    let mut high_risk: Option<(EntityId, f64, Posterior)> = None;
 
-    for node_id in &["node-a", "node-b", "node-c"] {
-        let node_str = node_id.to_string();
-        let default_post = Posterior::default();
-        let post = posterior_by_entity.get(&node_str).unwrap_or(&default_post);
-        let p_fail = 1.0 - post.normal;
+    for node in &topology.nodes {
+        let post = posterior_by_entity
+            .get(&node.id)
+            .cloned()
+            .unwrap_or_default();
+        let criticality = topology.criticality(&node.id);
+        let blast_radius = topology.blast_radius(&node.id);
+        let impact = aeris_mission::impact(criticality, blast_radius);
+        let risk = aeris_mission::risk(post.normal, impact);
 
-        let criticality = state.compute_criticality(node_id);
-        // Blast radius for relay B is 1.0
-        let blast_radius = if *node_id == "node-b" { 1.0 } else { 0.2 };
-        let impact = 1.0 - (1.0 - criticality) * (1.0 - blast_radius);
-        let risk = (p_fail * impact).clamp(0.0, 1.0);
+        risks.push((node.id.clone(), risk));
 
-        risks.push((node_str.clone(), risk));
-
-        if risk > 0.60 {
-            high_risk_entity = Some(node_str);
+        if risk > 0.60 && high_risk.as_ref().is_none_or(|(_, r, _)| risk > *r) {
+            high_risk = Some((node.id.clone(), risk, post));
         }
     }
 
     // ------------------------------------------------------------------------
     // Incident Management
     // ------------------------------------------------------------------------
-    if let Some(target) = high_risk_entity {
+    if let Some((target, target_risk, post)) = high_risk {
         let has_open = state
             .incidents
             .iter()
@@ -453,16 +475,6 @@ pub fn step(state: &mut CoreState, events: &[VerifiedEvent], seed: u64) -> Cycle
         if !has_open {
             let inc_id = format!("inc-{:02}", state.next_incident_num);
             state.next_incident_num += 1;
-            let post = posterior_by_entity
-                .get(&target)
-                .cloned()
-                .unwrap_or(Posterior {
-                    normal: 0.013,
-                    compromise: 0.947,
-                    sensor_failure: 0.003,
-                    misconfig: 0.036,
-                    environment: 0.001,
-                });
             let ev_ids: Vec<String> = evidence_batch.iter().map(|e| e.id.clone()).collect();
             state.incidents.push(Incident {
                 id: inc_id,
@@ -471,7 +483,7 @@ pub fn step(state: &mut CoreState, events: &[VerifiedEvent], seed: u64) -> Cycle
                 status: IncidentStatus::Open,
                 posterior: post,
                 evidence_ids: ev_ids,
-                risk: 0.987,
+                risk: target_risk,
             });
         }
     }
@@ -499,22 +511,17 @@ pub fn step(state: &mut CoreState, events: &[VerifiedEvent], seed: u64) -> Cycle
 
     if let Some(incident) = open_incident {
         let target_node = incident.entity.clone();
-        let backup_link = "link-l2".to_string();
+        // A standby link between the mission endpoints that does not route
+        // through the target. If none exists, reroute candidates are vetoed (I3).
+        let backup_link = topology
+            .links
+            .iter()
+            .find(|l| !l.active && !l.via.contains(&target_node))
+            .map(|l| l.id.clone())
+            .unwrap_or_default();
 
         let raw_actions = generate_candidates_for_incident(&target_node, &backup_link);
         let mut candidates = Vec::new();
-
-        let l1_active = state
-            .links
-            .get("link-l1")
-            .map(|l| l.active)
-            .unwrap_or(false);
-        let l2_active = state
-            .links
-            .get("link-l2")
-            .map(|l| l.active)
-            .unwrap_or(false);
-        let target_is_relay = target_node == "node-b";
 
         // Counterfactual rollouts (§6.10) run in aeris-sim from AERIS's own
         // view of the topology and its belief about hidden state; ground truth
@@ -528,8 +535,8 @@ pub fn step(state: &mut CoreState, events: &[VerifiedEvent], seed: u64) -> Cycle
         let belief = rollout_belief(&incident, &posterior_by_entity);
 
         for action in raw_actions {
-            let violations =
-                check_hard_invariants(&action, &target_node, l1_active, l2_active, target_is_relay);
+            // Safety monitor (aeris-policy) vetoes before scoring.
+            let violations = aeris_policy::check_invariants(&topology, &action);
 
             if !violations.is_empty() {
                 // Invariant violated: candidate is marked and never scored
@@ -562,7 +569,7 @@ pub fn step(state: &mut CoreState, events: &[VerifiedEvent], seed: u64) -> Cycle
             }
         }
 
-        let target_crit = state.compute_criticality(&target_node);
+        let target_crit = topology.criticality(&target_node);
         let uncertainty = incident.posterior.normalized_entropy();
 
         let model_health = state.swarm_estimator.overall_model_health();
@@ -625,23 +632,21 @@ pub fn step(state: &mut CoreState, events: &[VerifiedEvent], seed: u64) -> Cycle
     // Verification Stage (if action was executed)
     // ------------------------------------------------------------------------
     if let Some(ref last_act) = state.last_action_executed {
-        let is_recovered = match last_act {
-            Action::Combo(acts) => {
-                let has_iso = acts.iter().any(|a| matches!(a, Action::Isolate(id) if state.nodes.get(id) == Some(&NodeStatus::Isolated)));
-                let has_reroute = acts.iter().any(|a| matches!(a, Action::Reroute(l) if state.links.get(l).map(|link| link.active).unwrap_or(false)));
-                let all_caps_ok = capabilities.iter().all(|(cap, val)| {
-                    let min = match cap {
-                        Capability::Navigation => 0.85,
-                        Capability::Communication => 0.90,
-                        Capability::Observation => 0.80,
-                    };
-                    *val >= min
-                });
-                has_iso && has_reroute && all_caps_ok
-            }
-            _ => false,
-        };
-
+        // §6.13: the executed action's structural effect is observed, and every
+        // capability meets its (possibly degraded) minimum.
+        let now = state.topology();
+        let expected = now.apply(last_act);
+        let structure_ok = expected
+            .nodes
+            .iter()
+            .all(|n| now.node(&n.id).is_some_and(|m| m.active == n.active))
+            && expected
+                .links
+                .iter()
+                .all(|l| now.link(&l.id).is_some_and(|m| m.active == l.active));
+        let is_recovered = !matches!(last_act, Action::Monitor)
+            && structure_ok
+            && aeris_mission::mission_success(&caps_from_vec(&capabilities), &expected.minima);
         state.verification_passed = Some(is_recovered);
         if is_recovered {
             state.mode = Mode::Recovery;

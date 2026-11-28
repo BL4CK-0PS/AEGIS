@@ -11,6 +11,8 @@ description = "Core computational pipeline and state loop for AERIS without I/O"
 aeris-types = { path = "../aeris-types" }
 aeris-trust = { path = "../aeris-trust" }
 aeris-decision = { path = "../aeris-decision" }
+aeris-mission = { path = "../aeris-mission" }
+aeris-policy = { path = "../aeris-policy" }
 aeris-sim = { path = "../aeris-sim" }
 aeris-wire = { path = "../aeris-wire" }
 aeris-anomaly = { path = "../aeris-anomaly" }

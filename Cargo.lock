@@ -31,6 +31,8 @@ dependencies = [
  "aeris-estimator",
  "aeris-explain",
  "aeris-fusion",
+ "aeris-mission",
+ "aeris-policy",
  "aeris-sim",
  "aeris-trust",
  "aeris-types",
@@ -65,6 +67,7 @@ dependencies = [
 name = "aeris-decision"
 version = "0.1.0"
 dependencies = [
+ "aeris-policy",
  "aeris-types",
  "rand 0.8.8",
  "rand_chacha",
@@ -165,6 +168,24 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "uuid",
+]
+
+[[package]]
+name = "aeris-mission"
+version = "0.1.0"
+dependencies = [
+ "aeris-graph",
+ "aeris-types",
+ "serde",
+]
+
+[[package]]
+name = "aeris-policy"
+version = "0.1.0"
+dependencies = [
+ "aeris-mission",
+ "aeris-types",
+ "serde",
 ]
 
 [[package]]
